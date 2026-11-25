@@ -1,0 +1,8 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {mutate,trigger,overview} from '../lib/server.mjs';
+process.env.N8N_API_KEY='mock';process.env.N8N_WORKFLOW_ID='test';process.env.N8N_WEBHOOK_SECRET='mock';process.env.DEMO_MODE='false';
+const draft={post_id:'TEST1',source_instagram_url:'https://www.instagram.com/reel/ABC123/',media_type:'REEL',publish_mode:'NOW',authorized:true};let requests=[],fail=false;const orig=globalThis.fetch;
+globalThis.fetch=async(url,opts)=>{const path=new URL(url).pathname;const body=opts.body?JSON.parse(opts.body):null;requests.push({path,body});if(path.endsWith('/executions'))return Response.json({data:[]});if(path.endsWith('/workflows/test'))return Response.json({id:'test',active:true,nodes:[]});if(path.endsWith('/instagram-manager-sheet-v1')){if(fail)throw new Error('timeout');return Response.json(body.action==='LIST'?{ok:true,rows:[]}:{ok:true,row:{...body.input,status:'DRAFT'}})}throw Error('unexpected route')};
+test('one bridge request for draft save; no redundant LIST',async()=>{requests=[];assert.equal((await mutate('CREATE',draft)).row.status,'DRAFT');assert.deepEqual(requests.filter(x=>x.body).map(x=>x.body.action),['CREATE'])});
+test('timed-out save is not automatically resubmitted',async()=>{requests=[];fail=true;await assert.rejects(mutate('CREATE',draft),/Write outcome unknown for TEST1/);assert.equal(requests.filter(x=>x.body?.action==='CREATE').length,1);fail=false});
+test('original workflow cannot accept dashboard commands',async()=>{await assert.rejects(trigger({mode:'INGEST',post_id:'TEST1'}),/Import v10-dashboard/);assert.equal((await overview()).workflow.dashboardEnabled,false)});
+test.after(()=>{globalThis.fetch=orig});
