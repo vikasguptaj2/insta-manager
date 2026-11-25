@@ -365,9 +365,7 @@
           "name": "Google Sheets account 3"
         }
       },
-      "retryOnFail": true,
-      "maxTries": 3,
-      "waitBetweenTries": 3000,
+      "retryOnFail": false,
       "alwaysOutputData": true
     },
     {
@@ -575,9 +573,7 @@
           "name": "Google Sheets account 3"
         }
       },
-      "retryOnFail": true,
-      "maxTries": 3,
-      "waitBetweenTries": 3000,
+      "retryOnFail": false,
       "alwaysOutputData": true
     },
     {
