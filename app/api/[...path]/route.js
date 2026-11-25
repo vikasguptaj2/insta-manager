@@ -1,0 +1,6 @@
+import {overview,detail,mutate,trigger,setActive} from '../../../lib/server.mjs';
+export const dynamic='force-dynamic';
+export const runtime='nodejs';
+const response=(body,status=200)=>Response.json(body,{status,headers:{'Cache-Control':'no-store'}});
+export async function GET(req,{params}){try{const {path}=await params;if(path[0]==='overview'&&path.length===1)return response(await overview());if(path[0]==='executions'&&path.length===2)return response(await detail(path[1]));return response({error:'Not found'},404);}catch(e){return response({error:e.message},502);}}
+export async function POST(req,{params}){try{const origin=req.headers.get('origin');if(origin&&new URL(origin).host!==req.headers.get('host'))return response({error:'Origin not allowed'},403);if(!req.headers.get('content-type')?.includes('application/json'))return response({error:'JSON required'},415);const {path}=await params;const b=await req.json();if(path[0]==='run'&&path.length===1)return response(await trigger(b));if(path[0]==='workflow'&&path.length===1)return response(await setActive(b));if(path[0]==='posts'&&path.length===1)return response(await mutate(b.action,b.input??{}));return response({error:'Not found'},404);}catch(e){return response({error:e.message},400);}}

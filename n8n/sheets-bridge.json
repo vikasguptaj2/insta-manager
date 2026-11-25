@@ -1,0 +1,709 @@
+{
+  "name": "Instagram Manager | Existing Google Sheets bridge",
+  "nodes": [
+    {
+      "name": "Dashboard bridge",
+      "type": "n8n-nodes-base.webhook",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "instagram-manager-sheet-v1",
+        "responseMode": "lastNode",
+        "options": {},
+        "responseData": "firstEntryJson"
+      },
+      "position": [
+        -700,
+        0
+      ],
+      "typeVersion": 2,
+      "id": "74a0b187-92ca-49af-9cbc-4a6e58712bb1",
+      "webhookId": "8a1b4357-919a-4db8-976a-6968714a5eec"
+    },
+    {
+      "name": "Validate secret",
+      "type": "n8n-nodes-base.code",
+      "parameters": {
+        "jsCode": "const request=$input.first().json; if(request.headers?.[\"x-dashboard-secret\"]!==\"EWqiDy3vCs8zK1DyF9z7i06XJ9WFua50Sd50Hp7Wc8I\") throw Error(\"Unauthorized local dashboard request\"); const body=request.body??{};\nreturn [{json:{action:String(body.action??''),input:body.input??{}}}];"
+      },
+      "position": [
+        -480,
+        0
+      ],
+      "typeVersion": 2,
+      "id": "d9819d6d-b5e1-4373-98d1-1b4ec72eb525"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "18819980",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -240,
+        0
+      ],
+      "id": "c8e5369b-4554-4067-a004-b8ea5e1968b8",
+      "name": "SHEET | Read rows",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "GHSuk2GaYdqt7oKv",
+          "name": "Google Sheets account 3"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "name": "Validate sheet operation",
+      "type": "n8n-nodes-base.code",
+      "parameters": {
+        "jsCode": "const ACCOUNT='17841453414532595';\nconst SHEET='19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs';\nconst GID='18819980';\nconst FIELDS=['post_id','source_instagram_url','media_url','media_type','original_caption','caption','account_key','ig_user_id','publish_mode','publish_at','status','published_id','published_url','error','processed_at'];\nconst MODES=['AUTO','CHECK','INGEST','PUBLISH','HEALTH','AI_TEST','AI_RETRY'];\nconst text=v=>String(v??'').trim();\nfunction normalize(row){return Object.fromEntries(FIELDS.map(k=>[k,k==='status'?(text(row[k]).toUpperCase()||'DRAFT'):typeof row[k]==='number'&&['ig_user_id','published_id'].includes(k)&&!Number.isSafeInteger(row[k])?'UNSAFE_NUMERIC_ID':String(row[k]??'')]));}\nconst locked=r=>!!(text(r.published_id)||text(r.published_url)||['PUBLISHED','PROCESSING','VERIFY_MANUALLY','INGESTING','AI_PROCESSING'].includes(text(r.status).toUpperCase()));\nconst sourceCode=s=>text(s).match(/^https:\\/\\/(?:www\\.)?instagram\\.com\\/(?:p|reel|reels|tv)\\/([A-Za-z0-9_-]{5,40})\\/?(?:[?#][^\\s]*)?$/i)?.[1]??'';\nconst validMedia=(s,type)=>/^https:\\/\\/res\\.cloudinary\\.com\\/djkkknb9k\\/(?:video|image)\\/upload\\/[^\\s]+$/i.test(text(s))&&(type==='REEL'?s.includes('/video/upload/'):type==='IMAGE'&&s.includes('/image/upload/'));\nfunction validateDraft(input){const r=normalize(input);if(!/^[A-Za-z0-9_-]{1,80}$/.test(r.post_id))throw Error('Invalid post ID');if(!['IMAGE','REEL'].includes(r.media_type))throw Error('Select IMAGE or REEL');if(r.source_instagram_url&&!sourceCode(r.source_instagram_url))throw Error('Invalid Instagram source URL');if(r.media_url&&!validMedia(r.media_url,r.media_type))throw Error('Use an existing valid Cloudinary URL for this media type');if(!r.media_url&&!sourceCode(r.source_instagram_url))throw Error('Enter an Instagram source URL or a Cloudinary URL');if(r.caption.length>2200||r.original_caption.length>2200)throw Error('Caption must be at most 2200 characters');if(!['NOW','LATER'].includes(r.publish_mode))throw Error('Invalid publish mode');if(r.publish_mode==='LATER'&&(!/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(?::\\d{2}(?:\\.\\d{1,3})?)?(?:Z|[+-]\\d{2}:\\d{2})$/i.test(r.publish_at)||!Number.isFinite(Date.parse(r.publish_at))))throw Error('Scheduled time must include timezone');return {...r,account_key:'A',ig_user_id:ACCOUNT,publish_at:r.publish_mode==='NOW'?'':r.publish_at};}\nfunction applyMutation(action,input,rows){const id=text(input.post_id);const matches=rows.filter(r=>text(r.post_id)===id);if(matches.length>1)throw Error('Duplicate post ID: '+id);const old=matches[0];if(action==='CREATE'){if(old)throw Error('Post ID already exists');if(input.authorized!==true)throw Error('Confirm permission to publish this content');const r=validateDraft(input);if(rows.some(x=>sourceCode(x.source_instagram_url)&&sourceCode(x.source_instagram_url)===sourceCode(r.source_instagram_url)))throw Error('Source already exists in queue');return {...r,status:'DRAFT',published_id:'',published_url:'',error:'',processed_at:''};}\nif(!old)throw Error('Post not found');const r=normalize(old);if(locked(r))throw Error('Protected post: inspect n8n/Instagram; cannot edit or retry here');if(action==='EDIT'){if(!['DRAFT','NEW','READY'].includes(r.status))throw Error('Resolve the error before editing');const next=validateDraft({...r,...Object.fromEntries(['source_instagram_url','media_url','media_type','original_caption','caption','publish_mode','publish_at'].filter(k=>k in input).map(k=>[k,input[k]]))});if(r.media_url&&(next.source_instagram_url!==r.source_instagram_url||next.media_url!==r.media_url||next.media_type!==r.media_type))throw Error('Prepared media cannot be replaced; create a new draft');if(rows.some(x=>x.post_id!==id&&sourceCode(x.source_instagram_url)&&sourceCode(x.source_instagram_url)===sourceCode(next.source_instagram_url)))throw Error('Source already exists in queue');return {...next,status:'DRAFT',published_id:r.published_id,published_url:r.published_url,error:r.error,processed_at:r.processed_at};}\nif(action==='APPROVE'){if(input.authorized!==true)throw Error('Confirm permission and approval');const next=validateDraft(r);if(!text(next.caption||next.original_caption))throw Error('Review and supply a caption');if(r.error&&!/^(OpenRouter|AI:)/i.test(r.error))throw Error('Resolve media error before approval');if(!['DRAFT','NEW','READY','AI_ERROR','AI_RETRY'].includes(r.status))throw Error('Post is not eligible for approval');return {...next,status:next.media_url?'READY':'NEW',error:''};}\nif(action==='DRAFT'){if(!['DRAFT','NEW','READY'].includes(r.status))throw Error('Cannot change this status to draft');return {...r,status:'DRAFT'};}\nif(action==='RETRY'){if(input.inspected!==true||r.status!=='ERROR'||r.media_url||!/^(v\\d+ media|Downloader|Cloudinary)/i.test(r.error))throw Error('Only inspected media errors without saved media may be retried');return {...r,status:'RETRY'};}\nif(action==='RESET_AI'){if(input.inspected!==true||!r.media_url||!text(r.original_caption)||!['DRAFT','READY','NEW','AI_ERROR','AI_RETRY'].includes(r.status))throw Error('AI reset requires prepared media, original caption and confirmation');return {...r,caption:'',status:'DRAFT',error:''};}throw Error('Unsupported action');}\nfunction runInput(input){const mode=text(input.mode).toUpperCase();const post_id=text(input.post_id);if(!MODES.includes(mode))throw Error('Unknown execution mode');if(post_id&&!/^[A-Za-z0-9_-]{1,80}$/.test(post_id))throw Error('Invalid post ID');if(mode==='AI_RETRY'&&!post_id)throw Error('AI_RETRY needs a post ID');const max_rows=Number(input.max_rows??5);if(!Number.isInteger(max_rows)||max_rows<1||max_rows>10)throw Error('Batch must be 1\u201310');return {mode,post_id,max_rows,fallback:input.fallback===true};}\nfunction scheduleInfo(workflow,executions){const node=workflow?.nodes?.find(n=>n.type==='n8n-nodes-base.scheduleTrigger'&&!n.disabled);const rule=node?.parameters?.rule?.interval;if(!workflow?.active||!node)return {label:workflow?.active?'No schedule':'Inactive',next:null};if(rule?.length!==1||rule[0].field!=='minutes')return {label:'Custom schedule (inspect n8n)',next:null};const minutes=Number(rule[0].minutesInterval);if(!Number.isInteger(minutes)||minutes<1||minutes>59)return {label:'Custom interval',next:null};const last=executions.find(e=>e.mode==='trigger'&&e.startedAt);let next=null;if(last){let n=Date.parse(last.startedAt)+minutes*60000;const now=Date.now();if(Number.isFinite(n)){if(n<=now)n+=Math.ceil((now-n+1)/(minutes*60000))*minutes*60000;next=new Date(n).toISOString();}}return {label:`Every ${minutes} minutes`,next,estimated:true};}\n\nconst req=$('Validate secret').first().json;const rows=$input.all().map(i=>i.json).filter(x=>text(x.post_id));if(req.action==='LIST')return [{json:{kind:'LIST',ok:true,rows:rows.map(normalize)}}];try{const next=applyMutation(req.action,req.input,rows);return [{json:{kind:req.action==='CREATE'?'CREATE':'UPDATE',...next}}];}catch(e){return [{json:{kind:'REPORT',ok:false,error:e.message}}];}"
+      },
+      "position": [
+        0,
+        0
+      ],
+      "typeVersion": 2,
+      "id": "6c61d1f6-83f0-4229-88af-d26052e9285f"
+    },
+    {
+      "name": "Mutation?",
+      "type": "n8n-nodes-base.if",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "87d0447c-201f-4839-99d9-b54946ca75f2",
+              "leftValue": "={{ ['CREATE','UPDATE'].includes($json.kind) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "position": [
+        240,
+        0
+      ],
+      "typeVersion": 2.2,
+      "id": "8f4782aa-c2b4-4fd3-b18f-5a52878c7eb5"
+    },
+    {
+      "name": "Create?",
+      "type": "n8n-nodes-base.if",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "32ebd498-09a3-4ba0-b8fa-3885f99e30c1",
+              "leftValue": "={{ $json.kind === 'CREATE' }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "position": [
+        480,
+        0
+      ],
+      "typeVersion": 2.2,
+      "id": "aad09a26-64d3-4eb1-84b9-5c9546651201"
+    },
+    {
+      "name": "Return list or validation",
+      "type": "n8n-nodes-base.code",
+      "parameters": {
+        "jsCode": "const {kind,...r}=$input.first().json;return [{json:r}];"
+      },
+      "position": [
+        480,
+        240
+      ],
+      "typeVersion": 2,
+      "id": "c27ab938-d75a-4b89-9591-75440ff0a311"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "18819980",
+          "mode": "id"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "post_id": "={{ $json.post_id }}",
+            "source_instagram_url": "={{ $json.source_instagram_url }}",
+            "media_url": "={{ $json.media_url }}",
+            "media_type": "={{ $json.media_type }}",
+            "original_caption": "={{ $json.original_caption }}",
+            "caption": "={{ $json.caption }}",
+            "account_key": "={{ $json.account_key }}",
+            "ig_user_id": "={{ $json.ig_user_id }}",
+            "publish_mode": "={{ $json.publish_mode }}",
+            "publish_at": "={{ $json.publish_at }}",
+            "status": "={{ $json.status }}",
+            "published_id": "={{ $json.published_id }}",
+            "published_url": "={{ $json.published_url }}",
+            "error": "={{ $json.error }}",
+            "processed_at": "={{ $json.processed_at }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "post_id",
+              "displayName": "post_id",
+              "required": false,
+              "defaultMatch": true,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "source_instagram_url",
+              "displayName": "source_instagram_url",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "media_url",
+              "displayName": "media_url",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "media_type",
+              "displayName": "media_type",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "original_caption",
+              "displayName": "original_caption",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "caption",
+              "displayName": "caption",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "account_key",
+              "displayName": "account_key",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "ig_user_id",
+              "displayName": "ig_user_id",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "publish_mode",
+              "displayName": "publish_mode",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "publish_at",
+              "displayName": "publish_at",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "published_id",
+              "displayName": "published_id",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "published_url",
+              "displayName": "published_url",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "error",
+              "displayName": "error",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "processed_at",
+              "displayName": "processed_at",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        720,
+        -100
+      ],
+      "id": "e16f3a02-dea8-4739-90dd-26af321b6b29",
+      "name": "SHEET | Append draft",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "GHSuk2GaYdqt7oKv",
+          "name": "Google Sheets account 3"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "18819980",
+          "mode": "id"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "post_id": "={{ $json.post_id }}",
+            "source_instagram_url": "={{ $json.source_instagram_url }}",
+            "media_url": "={{ $json.media_url }}",
+            "media_type": "={{ $json.media_type }}",
+            "original_caption": "={{ $json.original_caption }}",
+            "caption": "={{ $json.caption }}",
+            "account_key": "={{ $json.account_key }}",
+            "ig_user_id": "={{ $json.ig_user_id }}",
+            "publish_mode": "={{ $json.publish_mode }}",
+            "publish_at": "={{ $json.publish_at }}",
+            "status": "={{ $json.status }}",
+            "error": "={{ $json.error }}"
+          },
+          "matchingColumns": [
+            "post_id"
+          ],
+          "schema": [
+            {
+              "id": "post_id",
+              "displayName": "post_id",
+              "required": false,
+              "defaultMatch": true,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "source_instagram_url",
+              "displayName": "source_instagram_url",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "media_url",
+              "displayName": "media_url",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "media_type",
+              "displayName": "media_type",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "original_caption",
+              "displayName": "original_caption",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "caption",
+              "displayName": "caption",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "account_key",
+              "displayName": "account_key",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "ig_user_id",
+              "displayName": "ig_user_id",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "publish_mode",
+              "displayName": "publish_mode",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "publish_at",
+              "displayName": "publish_at",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "published_id",
+              "displayName": "published_id",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "published_url",
+              "displayName": "published_url",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "error",
+              "displayName": "error",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "processed_at",
+              "displayName": "processed_at",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        720,
+        100
+      ],
+      "id": "c5287d6e-c139-48e2-9f58-a8f1907db476",
+      "name": "SHEET | Update draft",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "GHSuk2GaYdqt7oKv",
+          "name": "Google Sheets account 3"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "alwaysOutputData": true
+    },
+    {
+      "name": "Confirm write",
+      "type": "n8n-nodes-base.code",
+      "parameters": {
+        "jsCode": "const r=$input.first().json;const expected=$('Validate sheet operation').first().json;if(String(r.post_id??'')!==expected.post_id||String(r.status??'')!==expected.status)throw Error('Sheet write not confirmed; refresh before retry');return [{json:{ok:true,row:r}}];"
+      },
+      "position": [
+        960,
+        0
+      ],
+      "typeVersion": 2,
+      "id": "fae19687-ebf0-4449-8330-88eb54a636f3"
+    }
+  ],
+  "connections": {
+    "Dashboard bridge": {
+      "main": [
+        [
+          {
+            "node": "Validate secret",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate secret": {
+      "main": [
+        [
+          {
+            "node": "SHEET | Read rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SHEET | Read rows": {
+      "main": [
+        [
+          {
+            "node": "Validate sheet operation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate sheet operation": {
+      "main": [
+        [
+          {
+            "node": "Mutation?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mutation?": {
+      "main": [
+        [
+          {
+            "node": "Create?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return list or validation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create?": {
+      "main": [
+        [
+          {
+            "node": "SHEET | Append draft",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "SHEET | Update draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SHEET | Append draft": {
+      "main": [
+        [
+          {
+            "node": "Confirm write",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SHEET | Update draft": {
+      "main": [
+        [
+          {
+            "node": "Confirm write",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Kolkata",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all"
+  },
+  "pinData": {}
+}
