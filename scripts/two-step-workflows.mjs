@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {verifyDashboard} from '../lib/workflow-safety.mjs';
+import {extractionCooldown} from '../lib/rate-limit.mjs';
 export {verifyDashboard};
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const marker='INSTAOPS_TWO_STEP_V1';
@@ -13,7 +14,7 @@ function replace(s,a,b){if(!s.includes(a))throw Error('Workflow differs from rev
 function approve(s){if(s.includes('Extract and upload media before approval'))return s;s=replace(s,"const next=validateDraft(r);if(!text(next.caption||next.original_caption))","const next=validateDraft(r);if(!next.media_url)throw Error('Extract and upload media before approval');if(rows.some(x=>text(x.post_id)!==id&&sourceCode(x.source_instagram_url)&&sourceCode(x.source_instagram_url)===sourceCode(next.source_instagram_url)))throw Error('Source already exists in queue');if(!text(next.caption||next.original_caption))");return replace(s,"status:next.media_url?'READY':'NEW'","status:'READY'")}
 export function patchBridge(w){w=clone(w);if(node(w,'Dashboard bridge').parameters.path!=='instagram-manager-sheet-v1')throw Error('Wrong Sheets bridge');set(w,'Validate sheet operation',approve(code(w,'Validate sheet operation')));node(w,'SHEET | Append draft').retryOnFail=false;const n='Validate sheet operation';let c=code(w,n);if(!c.includes('Review snapshot mismatch')){c=replace(c,"if(!next.media_url)throw Error('Extract and upload media before approval');","if(!next.media_url)throw Error('Extract and upload media before approval');if(input.reviewed!==JSON.stringify([next.post_id,next.source_instagram_url,next.media_url,next.media_type,next.caption.trim()||next.original_caption,next.publish_mode,next.publish_at,next.account_key,next.ig_user_id].map(text)))throw Error('Review snapshot mismatch');");set(w,n,c);}return w}
 export function patchDashboard(w){w=clone(w);if(node(w,'DASHBOARD | Run request').parameters.path!=='instagram-manager-run-v1')throw Error('Wrong dashboard workflow');
- if(code(w,'DASHBOARD | Validate command').includes(marker)){hardenDashboard(w);verifyDashboard(w);return w;}
+ if(code(w,'DASHBOARD | Validate command').includes(marker)){hardenDashboard(w);rateLimitDashboard(w);verifyDashboard(w);return w;}
  // Keep the schedule node and exact graph. Scheduled mode can publish only READY LATER posts when due.
  set(w,'CONFIG | Scheduled AUTO',`// ${marker}: scheduled publication only; never ingest drafts or publish NOW rows.\nreturn [{json:{mode:'PUBLISH',post_id:'',manual:false,max_rows:5,fallback:false,started:Date.now()}}];`);
  for(const name of ['QUEUE | Plan and explain','CURRENT | Revalidate row']){
@@ -28,11 +29,39 @@ export function patchDashboard(w){w=clone(w);if(node(w,'DASHBOARD | Run request'
  let s=approve(code(w,'DASHBOARD | Validate command'));s=replace(s,'const cfg=runInput(body);return',`// ${marker}\nconst cfg=runInput(body);if(cfg.mode==='AUTO')throw Error('Bulk AUTO disabled');if(['INGEST','PUBLISH','AI_RETRY'].includes(cfg.mode)){if(!cfg.post_id||body.authorized!==true)throw Error('Select one authorized post');cfg.max_rows=1;}if(cfg.mode==='PUBLISH'&&body.confirm!==true)throw Error('Confirm publication');return`);set(w,'DASHBOARD | Validate command',s);
  // Manual editor entry remains diagnostic; if later changed to a mutation, require a target.
  s=code(w,'CONFIG | Manual mode');s=replace(s,"if(mode==='AI_RETRY'&&!post_id)throw Error('AI_RETRY requires POST_ID');","if(mode==='AUTO')throw Error('Bulk AUTO disabled');if(['INGEST','PUBLISH','AI_RETRY'].includes(mode)&&!post_id)throw Error('POST_ID is required');");s=replace(s,'max_rows:Math.min(10,Math.max(1,MAX_ROWS))','max_rows:post_id?1:Math.min(10,Math.max(1,MAX_ROWS))');set(w,'CONFIG | Manual mode',s);
- hardenDashboard(w);return w;
+ hardenDashboard(w);rateLimitDashboard(w);verifyDashboard(w);return w;
 }
 function hardenDashboard(w){
  const n='DASHBOARD | Validate command';let c=code(w,n);if(!c.includes('Reviewed content required')){c=replace(c,"if(cfg.mode==='PUBLISH'&&body.confirm!==true)throw Error('Confirm publication');","if(cfg.mode==='PUBLISH'&&body.confirm!==true)throw Error('Confirm publication');if(cfg.mode==='PUBLISH'&&typeof body.reviewed!=='string')throw Error('Reviewed content required');");c=replace(c,'trigger_source:"DASHBOARD"','reviewed:body.reviewed,trigger_source:"DASHBOARD"');set(w,n,c);}
  set(w,'PUBLISH | Validate approved context',`const r=$input.first().json,cfg=$('CONFIG | Run context').first().json;if(r.action!=='PUBLISH'||cfg.mode!=='PUBLISH'||r.source_status!=='READY'||!r.media_url||!r.caption||r.caption.length>2200||!['REEL','IMAGE'].includes(r.media_type)||!r.due)throw Error('Publish guard failed');if(cfg.manual){if(cfg.post_id!==r.post_id||cfg.reviewed!==JSON.stringify([r.post_id,r.source,r.media_url,r.media_type,r.caption,r.publish_mode,r.publish_at,r.account_key,r.ig_user_id].map(v=>String(v??'').trim())))throw Error('Reviewed content changed or target mismatch');}else if(r.publish_mode!=='LATER')throw Error('Scheduled NOW publication forbidden');return [{pairedItem:{item:0},json:r}];`);
+}
+
+function rateLimitDashboard(w){
+ for(const name of ['QUEUE | Plan and explain','CURRENT | Revalidate row']){
+  let s=code(w,name);if(s.includes('INSTAOPS_RATE_LIMIT_V1'))continue;
+  s=replace(s,'function classify(rows){',`// INSTAOPS_RATE_LIMIT_V1
+${extractionCooldown.toString()}
+function classify(rows){
+ const cooldown=extractionCooldown(rows,now);`);
+  s=replace(s,"}else if(!prepared){\n   if(media)","}else if(!prepared){\n   if(cooldown.blocked)reason='Instagram extraction paused: '+(cooldown.unknown?'Inspect rate-limit record with missing timestamp':cooldown.until)+'; recovery not guaranteed';\n   else if(media)");
+  set(w,name,s);
+ }
+ const name='VALIDATE | Downloader';let s=code(w,name);
+ if(!s.includes('INSTAOPS_RATE_LIMIT_V1')){
+  s=replace(s,'return [{pairedItem:',`// INSTAOPS_RATE_LIMIT_V1
+const limited=Number(raw.statusCode)===429||String(r.code??'').toUpperCase()==='RATE_LIMIT'||/rate limited anonymous access/i.test(String(r.error??r.message??''));
+if(limited){
+ const now=Date.now(), headers=raw.headers??{}, h=headers['retry-after']??headers['Retry-After'];
+ const numeric=typeof h==='number'||typeof h==='string'&&/^\\d+$/.test(h.trim());
+ const headerAt=h==null?NaN:numeric?now+Number(h)*1000:Date.parse(String(h));
+ const bodySeconds=Number(r.retry_after_seconds), bodyAt=Number.isFinite(bodySeconds)&&bodySeconds>0?now+bodySeconds*1000:NaN;
+ const valid=v=>Number.isFinite(v)&&Math.abs(v)<=8640000000000000?v:0;
+ const until=new Date(Math.max(now+3600000,valid(headerAt),valid(bodyAt))).toISOString();
+ return [{pairedItem:{item:0},json:{ok:false,error:'Downloader RATE_LIMIT retry-until='+until+'; Instagram extraction paused. Retry only after cooldown; recovery not guaranteed.',media_type:s.media_type}}];
+}
+return [{pairedItem:`);
+  set(w,name,s);
+ }
 }
 
 const payload=w=>{const {name,nodes,connections,settings}=w;return {name,nodes,connections,settings};};
