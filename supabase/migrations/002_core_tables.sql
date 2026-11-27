@@ -129,6 +129,9 @@ CREATE TABLE IF NOT EXISTS public.instaops_jobs (
   operation TEXT NOT NULL,
   stage TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('QUEUED', 'RUNNING', 'COMPLETED', 'FAILED', 'OUTCOME_UNKNOWN')),
+  lock_key TEXT NOT NULL DEFAULT '',
+  lock_owner TEXT NOT NULL DEFAULT '',
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
   error_code TEXT,
   error_message TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -193,6 +196,8 @@ CREATE TABLE IF NOT EXISTS public.instaops_sync_queue (
   locked_at TIMESTAMPTZ,
   next_retry_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   last_error TEXT NOT NULL DEFAULT '',
+  source_revision INTEGER NOT NULL DEFAULT 0,
+  payload_timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

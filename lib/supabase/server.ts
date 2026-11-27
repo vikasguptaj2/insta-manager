@@ -150,11 +150,19 @@ export class SupabaseLockStore implements LockStore {
 
   async ensureSchema(): Promise<void> {
     if (this.verified) return;
-    const { error } = await this.client.from('instaops_job_locks').select('lock_key').limit(1);
+    const { data, error } = await this.client.rpc('instaops_verify_health_and_rpc');
     if (error) {
       throw new AppError(
         'CONFIGURATION_ERROR',
-        `Supabase schema missing or inaccessible (${error.message}). Execute supabase/INSTALL_FRESH.sql in Supabase SQL Editor.`,
+        `Supabase schema/RPC verification failed (${error.message}). Run supabase/INSTALL_FRESH.sql or supabase/migrations/006_upgrade_reliability.sql.`,
+        { httpStatus: 500 },
+      );
+    }
+    const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | undefined;
+    if (!row || row.schema_ok !== true || row.rls_ok !== true || row.anon_revoked_ok !== true || row.atomic_rpc_ok !== true) {
+      throw new AppError(
+        'CONFIGURATION_ERROR',
+        `Supabase reliability verification incomplete (${String(row?.detail ?? 'missing tables/RLS/RPC')}). Execute supabase/migrations/006_upgrade_reliability.sql.`,
         { httpStatus: 500 },
       );
     }
@@ -163,13 +171,16 @@ export class SupabaseLockStore implements LockStore {
 
   async acquireLock(input: LockAcquireInput): Promise<JobLock> {
     await this.ensureSchema();
-    const { data: postRow } = await this.client
-      .from('instaops_posts')
-      .select('id')
-      .eq('post_id', input.post_id)
-      .maybeSingle();
+    let postUuid = input.post_uuid && isUuid(input.post_uuid) ? input.post_uuid : null;
+    if (!postUuid) {
+      const { data: postRow } = await this.client
+        .from('instaops_posts')
+        .select('id')
+        .eq('post_id', input.post_id)
+        .maybeSingle();
+      postUuid = postRow && typeof postRow.id === 'string' ? postRow.id : null;
+    }
 
-    const postUuid = postRow && typeof postRow.id === 'string' ? postRow.id : null;
     const { data, error } = await this.client.rpc('instaops_acquire_lock', {
       p_lock_key: input.lock_key,
       p_post_uuid: postUuid,
@@ -201,6 +212,7 @@ export class SupabaseLockStore implements LockStore {
 
     return {
       lock_key: String(row.lock_key),
+      post_uuid: postUuid ?? undefined,
       post_id: String(row.post_id),
       operation: String(row.operation) as JobOperation,
       owner_id: String(row.owner_id),
@@ -208,6 +220,72 @@ export class SupabaseLockStore implements LockStore {
       acquired_at: String(row.acquired_at),
       expires_at: String(row.expires_at),
     };
+  }
+
+  async transferOrClaimLock(input: LockAcquireInput & { expectedOwner?: string }): Promise<JobLock> {
+    await this.ensureSchema();
+    let postUuid = input.post_uuid && isUuid(input.post_uuid) ? input.post_uuid : null;
+    if (!postUuid) {
+      const { data: postRow } = await this.client
+        .from('instaops_posts')
+        .select('id')
+        .eq('post_id', input.post_id)
+        .maybeSingle();
+      postUuid = postRow && typeof postRow.id === 'string' ? postRow.id : null;
+    }
+
+    const { data, error } = await this.client.rpc('instaops_transfer_or_claim_lock', {
+      p_lock_key: input.lock_key,
+      p_post_uuid: postUuid,
+      p_post_id: input.post_id,
+      p_operation: input.operation,
+      p_expected_owner: input.expectedOwner ?? '',
+      p_new_owner: input.owner_id,
+      p_request_id: input.request_id,
+      p_lease_seconds: Math.max(15, Math.min(3600, input.leaseSeconds ?? 300)),
+    });
+
+    if (error) {
+      throw new AppError('LOCK_ACQUISITION_FAILED', `Supabase lock transfer RPC error: ${error.message}`, {
+        httpStatus: 500,
+      });
+    }
+
+    const rows = Array.isArray(data) ? data : [data];
+    const row = rows[0] as Record<string, unknown> | undefined;
+    if (!row || row.acquired !== true) {
+      throw new AppError(
+        'POST_LOCKED',
+        `Lock transfer failed for ${input.post_id}: ${String(row?.reason ?? 'active lock conflict')}.`,
+        {
+          httpStatus: 409,
+          details: { owner_id: row?.owner_id, expires_at: row?.expires_at },
+        },
+      );
+    }
+
+    return {
+      lock_key: String(row.lock_key),
+      post_uuid: postUuid ?? undefined,
+      post_id: String(row.post_id),
+      operation: String(row.operation) as JobOperation,
+      owner_id: String(row.owner_id),
+      request_id: String(row.request_id),
+      acquired_at: String(row.acquired_at),
+      expires_at: String(row.expires_at),
+    };
+  }
+
+  async renewLock(lockKey: string, ownerId: string, leaseSeconds = 300): Promise<{ renewed: boolean; expires_at?: string }> {
+    const { data, error } = await this.client.rpc('instaops_renew_lock', {
+      p_lock_key: lockKey,
+      p_owner_id: ownerId,
+      p_lease_seconds: Math.max(15, Math.min(3600, leaseSeconds)),
+    });
+    if (error) return { renewed: false };
+    const rows = Array.isArray(data) ? data : [data];
+    const row = rows[0] as { renewed?: boolean; expires_at?: string } | undefined;
+    return row?.renewed === true ? { renewed: true, expires_at: String(row.expires_at ?? '') } : { renewed: false };
   }
 
   async releaseLock(lockKey: string, ownerId: string): Promise<boolean> {
@@ -222,7 +300,7 @@ export class SupabaseLockStore implements LockStore {
   async listActiveLocks(): Promise<JobLock[]> {
     const { data, error } = await this.client
       .from('instaops_job_locks')
-      .select('lock_key, post_id, operation, owner_id, request_id, acquired_at, expires_at')
+      .select('lock_key, post_uuid, post_id, operation, owner_id, request_id, acquired_at, expires_at')
       .gte('expires_at', new Date().toISOString())
       .order('acquired_at', { ascending: false });
     if (error || !data) return [];
@@ -286,6 +364,8 @@ export class SupabaseLockStore implements LockStore {
       operation: job.operation,
       stage: job.stage,
       status: job.status,
+      lock_key: job.lock_key ?? '',
+      lock_owner: job.lock_owner ?? '',
       error_code: job.error_code ?? null,
       error_message: job.error_message ?? null,
       finished_at: job.finished_at ?? null,
@@ -294,7 +374,7 @@ export class SupabaseLockStore implements LockStore {
     const { data, error } = await this.client
       .from('instaops_jobs')
       .upsert(payload, { onConflict: 'job_id' })
-      .select('job_id, request_id, execution_id, post_id, operation, stage, status, error_code, error_message, created_at, updated_at, finished_at')
+      .select('job_id, request_id, execution_id, post_id, operation, stage, status, lock_key, lock_owner, error_code, error_message, created_at, updated_at, finished_at')
       .single();
 
     if (error || !data) {
@@ -306,7 +386,7 @@ export class SupabaseLockStore implements LockStore {
   async getJob(jobId: string): Promise<DurableJob | null> {
     const { data, error } = await this.client
       .from('instaops_jobs')
-      .select('job_id, request_id, execution_id, post_id, operation, stage, status, error_code, error_message, created_at, updated_at, finished_at')
+      .select('job_id, request_id, execution_id, post_id, operation, stage, status, lock_key, lock_owner, error_code, error_message, created_at, updated_at, finished_at')
       .eq('job_id', jobId)
       .maybeSingle();
     if (error || !data) return null;
@@ -316,7 +396,7 @@ export class SupabaseLockStore implements LockStore {
   async listJobs(limit = 50): Promise<DurableJob[]> {
     const { data, error } = await this.client
       .from('instaops_jobs')
-      .select('job_id, request_id, execution_id, post_id, operation, stage, status, error_code, error_message, created_at, updated_at, finished_at')
+      .select('job_id, request_id, execution_id, post_id, operation, stage, status, lock_key, lock_owner, error_code, error_message, created_at, updated_at, finished_at')
       .order('created_at', { ascending: false })
       .limit(limit);
     if (error || !data) return [];
@@ -335,32 +415,74 @@ export class SupabaseRepository {
     this.client = clientOverride ?? createSupabaseAdminClient(fetchImpl);
   }
 
-  async checkHealth(): Promise<{ ok: boolean; detail: string; latencyMs: number }> {
+  async getHealthDiagnostics(): Promise<{
+    ok: boolean;
+    reachable: boolean;
+    schemaVerified: boolean;
+    rlsVerified: boolean;
+    anonRevoked: boolean;
+    atomicRpcTested: boolean;
+    activeAccountsCount: number;
+    detail: string;
+    latencyMs: number;
+  }> {
     const t0 = Date.now();
     try {
-      const { error, count } = await this.client
-        .from('instaops_accounts')
-        .select('id', { count: 'exact', head: true });
+      const { data, error } = await this.client.rpc('instaops_verify_health_and_rpc');
       const latencyMs = Date.now() - t0;
       if (error) {
         return {
           ok: false,
-          detail: `Schema/API error: ${error.message} (verify supabase/INSTALL_FRESH.sql ran)`,
+          reachable: !/fetch|network|timeout|ECONNREFUSED/i.test(error.message),
+          schemaVerified: false,
+          rlsVerified: false,
+          anonRevoked: false,
+          atomicRpcTested: false,
+          activeAccountsCount: 0,
+          detail: `RPC diagnostic error: ${error.message} (apply supabase/migrations/006_upgrade_reliability.sql)`,
           latencyMs,
         };
       }
+      const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | undefined;
+      const schemaVerified = row?.schema_ok === true;
+      const rlsVerified = row?.rls_ok === true;
+      const anonRevoked = row?.anon_revoked_ok === true;
+      const atomicRpcTested = row?.atomic_rpc_ok === true;
+      const activeAccountsCount = Number(row?.active_accounts_count ?? 0);
+      const ok = schemaVerified && rlsVerified && anonRevoked && atomicRpcTested;
       return {
-        ok: true,
-        detail: `Connected primary PostgreSQL (${count ?? 0} account(s), RLS active)`,
+        ok,
+        reachable: true,
+        schemaVerified,
+        rlsVerified,
+        anonRevoked,
+        atomicRpcTested,
+        activeAccountsCount,
+        detail: String(row?.detail ?? `tables=${String(row?.tables_count ?? 0)}/10`),
         latencyMs,
       };
     } catch (e) {
       return {
         ok: false,
+        reachable: false,
+        schemaVerified: false,
+        rlsVerified: false,
+        anonRevoked: false,
+        atomicRpcTested: false,
+        activeAccountsCount: 0,
         detail: e instanceof Error ? e.message : 'Supabase probe failed',
         latencyMs: Date.now() - t0,
       };
     }
+  }
+
+  async checkHealth(): Promise<{ ok: boolean; detail: string; latencyMs: number }> {
+    const d = await this.getHealthDiagnostics();
+    return {
+      ok: d.ok,
+      detail: d.ok ? `Verified primary PostgreSQL (${d.detail})` : d.detail,
+      latencyMs: d.latencyMs,
+    };
   }
 
   async listPosts(includeDeleted = false): Promise<ContentRecord[]> {
@@ -457,11 +579,52 @@ export class SupabaseRepository {
       entityUuid: saved.id!,
       externalId: saved.post_id,
       operation: 'UPSERT',
+      sourceRevision: Number(saved.revision) || 1,
       payload: { row: toSafeSheetRow(saved), post_uuid: saved.id },
       idempotencyKey: `post:${saved.id}:rev${saved.revision}:create`,
     });
     await this.auditEvent(saved.id!, 'POST', saved.post_id, 'CREATE_POST', { source_id: saved.source_id });
     return saved;
+  }
+
+  async approvePostRevision(postUuid: string, reviewedRevision: number): Promise<ContentRecord> {
+    const { data, error } = await this.client.rpc('instaops_approve_post_revision', {
+      p_post_uuid: postUuid,
+      p_reviewed_revision: reviewedRevision,
+    });
+    if (error || !data) {
+      const msg = error?.message || 'Unable to persist manual revision approval.';
+      const isRev = /revision mismatch/i.test(msg);
+      const isAcct = /account/i.test(msg);
+      throw new AppError(
+        isRev ? 'REVISION_CONFLICT' : isAcct ? 'CONFIGURATION_ERROR' : 'POST_LOCKED',
+        msg,
+        { httpStatus: isRev || !isAcct ? 409 : 422 },
+      );
+    }
+    return rowToContentRecord(data as Record<string, unknown>);
+  }
+
+  async isDestinationAccountEnabled(igUserId: string, accountKey = 'A'): Promise<boolean> {
+    const { data, error } = await this.client
+      .from('instaops_accounts')
+      .select('id, enabled, ig_user_id, account_key')
+      .or(`ig_user_id.eq.${igUserId},account_key.eq.${accountKey}`)
+      .limit(2);
+    if (error || !data || !Array.isArray(data)) return false;
+    return data.some((a: Record<string, unknown>) => a.enabled === true);
+  }
+
+  async hasUnresolvedPublishAttempt(postUuid: string): Promise<boolean> {
+    const { data, error } = await this.client
+      .from('instaops_jobs')
+      .select('job_id, status')
+      .eq('post_uuid', postUuid)
+      .eq('operation', 'PUBLISH')
+      .in('status', ['QUEUED', 'RUNNING', 'OUTCOME_UNKNOWN'])
+      .limit(1);
+    if (error || !data) return false;
+    return Array.isArray(data) && data.length > 0;
   }
 
   async updatePost(record: ContentRecord, changeSource = 'STUDIO'): Promise<ContentRecord> {
@@ -494,11 +657,63 @@ export class SupabaseRepository {
       entityUuid: saved.id!,
       externalId: saved.post_id,
       operation: saved.status === 'ARCHIVED' ? 'ARCHIVE' : 'UPSERT',
+      sourceRevision: Number(saved.revision) || 1,
       payload: { row: toSafeSheetRow(saved), post_uuid: saved.id },
       idempotencyKey: `post:${saved.id}:rev${saved.revision}:${saved.status}:${Date.now()}`,
     });
     await this.auditEvent(saved.id!, 'POST', saved.post_id, `UPDATE_${changeSource}`, { status: saved.status });
     return saved;
+  }
+
+  async markAssetsDeletePending(postUuid: string, internalAssetIds: string[]): Promise<void> {
+    if (!internalAssetIds.length) return;
+    await this.client
+      .from('instaops_media_assets')
+      .update({ storage_status: 'DELETE_PENDING', error: '' })
+      .eq('post_uuid', postUuid)
+      .in('internal_asset_id', internalAssetIds);
+  }
+
+  async finalizeDeletionCheckpoint(params: {
+    postUuid: string;
+    operation: 'DELETE_MEDIA' | 'DELETE_POST';
+    confirmedAssetIds: string[];
+    failedAssets: Array<{ internal_asset_id: string; error: string }>;
+    reason?: string;
+    jobId?: string;
+    lockKey?: string;
+    lockOwner?: string;
+  }): Promise<{ postStatus: string; confirmedCount: number; failedCount: number }> {
+    const { data, error } = await this.client.rpc('instaops_finalize_deletion', {
+      p_post_uuid: params.postUuid,
+      p_operation: params.operation,
+      p_confirmed_asset_ids: params.confirmedAssetIds,
+      p_failed_assets: params.failedAssets,
+      p_reason: params.reason ?? '',
+      p_job_id: params.jobId ?? '',
+      p_lock_key: params.lockKey ?? '',
+      p_lock_owner: params.lockOwner ?? '',
+    });
+    if (error) {
+      throw new AppError('DELETE_OUTCOME_UNKNOWN', `Deletion checkpoint RPC failed after Cloudinary response: ${error.message}`, {
+        httpStatus: 502,
+      });
+    }
+    const rows = Array.isArray(data) ? data : [data];
+    const row = rows[0] as Record<string, unknown> | undefined;
+    return {
+      postStatus: String(row?.post_status ?? ''),
+      confirmedCount: Number(row?.confirmed_count ?? params.confirmedAssetIds.length),
+      failedCount: Number(row?.failed_count ?? params.failedAssets.length),
+    };
+  }
+
+  async recoverAbandonedSyncJobs(staleSeconds = 180): Promise<number> {
+    const { data, error } = await this.client.rpc('instaops_recover_stale_sync_jobs', {
+      p_stale_seconds: staleSeconds,
+    });
+    if (error) return 0;
+    return typeof data === 'number' ? data : 0;
   }
 
   async softDeletePost(postUuid: string, reason = ''): Promise<ContentRecord> {
@@ -571,6 +786,7 @@ export class SupabaseRepository {
     operation: SyncQueueRecord['operation'];
     payload: Record<string, unknown>;
     idempotencyKey: string;
+    sourceRevision?: number;
   }): Promise<void> {
     await this.client
       .from('instaops_sync_queue')
@@ -581,6 +797,7 @@ export class SupabaseRepository {
           external_id: params.externalId,
           operation: params.operation,
           payload: params.payload,
+          source_revision: params.sourceRevision ?? 0,
           idempotency_key: params.idempotencyKey,
           status: 'PENDING',
         },
@@ -592,6 +809,7 @@ export class SupabaseRepository {
     const { data, error } = await this.client.rpc('instaops_claim_sync_batch', {
       p_worker_id: workerId,
       p_batch_size: batchSize,
+      p_stale_seconds: 180,
     });
     if (error || !data) return [];
     return data as SyncQueueRecord[];

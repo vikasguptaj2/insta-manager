@@ -170,6 +170,8 @@ export interface DurableJob {
   operation: JobOperation;
   stage: JobStage;
   status: 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'OUTCOME_UNKNOWN';
+  lock_key?: string;
+  lock_owner?: string;
   error_code?: string;
   error_message?: string;
   created_at: string;
@@ -179,6 +181,7 @@ export interface DurableJob {
 
 export interface JobLock {
   lock_key: string;
+  post_uuid?: string;
   post_id: string;
   operation: JobOperation;
   owner_id: string;
@@ -242,6 +245,7 @@ export interface SyncQueueRecord {
   external_id: string;
   operation: 'UPSERT' | 'SOFT_DELETE' | 'DELETE_MEDIA' | 'ARCHIVE';
   payload?: Record<string, unknown>;
+  source_revision?: number;
   status: 'PENDING' | 'PROCESSING' | 'SUCCEEDED' | 'FAILED' | 'DEAD_LETTER';
   attempts: number;
   max_attempts: number;
@@ -249,6 +253,23 @@ export interface SyncQueueRecord {
   next_retry_at: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface ReadinessMatrix {
+  configurationValid: boolean;
+  supabaseReachable: boolean;
+  databaseSchemaVerified: boolean;
+  atomicRpcTested: boolean;
+  rlsVerified: boolean;
+  n8nAuthenticated: boolean;
+  requiredWorkflowsConfigured: boolean;
+  downloaderAuthVerified: boolean;
+  cloudinaryAuthenticated: boolean;
+  instagramAuthenticated: boolean;
+  n8nEnvAccessOk: boolean;
+  readyForExtraction: boolean;
+  readyForPublishing: boolean;
+  readyForDeletion: boolean;
 }
 
 export interface StorageSummary {
@@ -358,6 +379,7 @@ export interface OverviewResponse {
   jobs: DurableJob[];
   locks: JobLock[];
   syncQueue?: SyncQueueRecord[];
+  readiness?: ReadinessMatrix;
   cooldown: {
     blocked: boolean;
     until: string | null;

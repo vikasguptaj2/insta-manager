@@ -7,11 +7,12 @@ import type {
   N8nExecutionDetail,
   N8nExecutionSummary,
   OverviewResponse,
+  ReadinessMatrix,
   ServiceConnectionStatus,
   StorageSummary,
   SyncQueueRecord,
 } from '../types/instaops';
-import { getConfig } from './config/env';
+import { getConfig, validateConfig } from './config/env';
 import { AppError } from './errors/codes';
 import {
   normalizeContentRecord,
@@ -36,7 +37,7 @@ import {
   buildOwnedPublicId,
   summarizeDeletionOutcomes,
 } from './cloudinary/assets';
-import { checkDownloaderHealth } from './downloader/client';
+import { verifyDownloaderAuth } from './downloader/client';
 import {
   getExecutionDetail,
   getWorkflowMetadata,
@@ -69,6 +70,12 @@ export interface AcceptedJobResponse {
 
 function hashPayload(obj: unknown): string {
   return crypto.createHash('sha256').update(JSON.stringify(obj)).digest('hex');
+}
+
+function canonicalPostLockKey(post: Pick<ContentRecord, 'id' | 'post_id'>): string {
+  const idVal = (post.id ?? '').trim();
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(idVal);
+  return `post:${isUuid ? idVal : post.post_id}`;
 }
 
 function computeStats(
@@ -124,7 +131,17 @@ export async function flushSyncQueueToSheets(
 
   for (const item of batch) {
     try {
-      await n8nWebhookRequest(
+      // Prevent stale outbox revisions from overwriting newer authoritative post state in Google Sheets
+      if (item.entity_type === 'POST' && item.source_revision && item.source_revision > 0) {
+        const latest = await repo.getPostByIdOrUuid(item.entity_uuid);
+        if (latest && Number(latest.revision) > item.source_revision) {
+          await repo.markSyncSucceeded(item);
+          succeeded++;
+          continue;
+        }
+      }
+
+      const syncRes = await n8nWebhookRequest<{ ok?: boolean; synced?: boolean }>(
         cfg.workflows.contentPath,
         {
           action: 'SYNC_RECORD',
@@ -133,12 +150,16 @@ export async function flushSyncQueueToSheets(
           entity_uuid: item.entity_uuid,
           external_id: item.external_id,
           operation: item.operation,
+          source_revision: item.source_revision ?? 0,
           payload: item.payload,
           request_id: crypto.randomUUID(),
         },
         20_000,
         fetchImpl,
       );
+      if (syncRes.synced === false || syncRes.ok === false) {
+        throw new Error('Google Sheets sync write verification did not confirm persistence.');
+      }
       await repo.markSyncSucceeded(item);
       succeeded++;
     } catch (err) {
@@ -165,8 +186,9 @@ export async function getSyncStatusAndFlush(
   if (!isSupabasePrimaryConfigured()) {
     return { queue: [], flushed: mode === 'FLUSH' ? { processed: 0, succeeded: 0, failed: 0 } : undefined };
   }
-  const flushed = mode === 'FLUSH' ? await flushSyncQueueToSheets(fetchImpl) : undefined;
   const repo = new SupabaseRepository(fetchImpl);
+  await repo.recoverAbandonedSyncJobs(180).catch(() => 0);
+  const flushed = mode === 'FLUSH' ? await flushSyncQueueToSheets(fetchImpl) : undefined;
   const queue = await repo.listSyncQueue(50);
   return { queue, flushed };
 }
@@ -274,97 +296,247 @@ async function loadRemoteSnapshot(
   };
 }
 
-export async function getConnectionsHealth(
+export async function getReadinessDiagnostics(
   fetchImpl: typeof fetch = fetch,
-): Promise<ServiceConnectionStatus[]> {
+): Promise<{
+  readiness: ReadinessMatrix;
+  connections: ServiceConnectionStatus[];
+  validation: ReturnType<typeof validateConfig>;
+}> {
   const cfg = getConfig();
+  const validation = validateConfig(cfg);
   const now = new Date().toISOString();
 
   if (cfg.demoMode) {
-    return [
-      { id: 'supabase', name: 'Supabase PostgreSQL (Primary)', status: 'connected', detail: 'DEMO_MODE simulated primary DB', checkedAt: now },
-      { id: 'n8n', name: 'Online n8n Server', status: 'connected', detail: 'DEMO_MODE simulated', checkedAt: now },
-      { id: 'downloader', name: 'Hosted Downloader', status: 'connected', detail: 'DEMO_MODE simulated', checkedAt: now },
+    const connections: ServiceConnectionStatus[] = [
+      { id: 'supabase', name: 'Supabase PostgreSQL (Primary)', status: 'connected', detail: 'DEMO_MODE simulated primary DB + RLS + RPC', checkedAt: now },
+      { id: 'n8n', name: 'Online n8n Server', status: 'connected', detail: 'DEMO_MODE simulated (W01-W05)', checkedAt: now },
+      { id: 'downloader', name: 'Hosted Downloader', status: 'connected', detail: 'DEMO_MODE simulated Bearer auth', checkedAt: now },
       { id: 'sheets', name: 'Google Sheets (Sync Layer)', status: 'connected', detail: 'DEMO_MODE outbox simulated', checkedAt: now },
       { id: 'cloudinary', name: `Cloudinary (${cfg.cloudinaryCloudName})`, status: 'connected', detail: 'DEMO_MODE simulated', checkedAt: now },
       { id: 'instagram', name: `Instagram (${cfg.instagramAccountLabel})`, status: 'connected', detail: `ID ${cfg.instagramUserId} (Demo)`, checkedAt: now },
       { id: 'lockStore', name: 'Durable Lock Store', status: 'connected', detail: 'In-memory test lock', checkedAt: now },
       { id: 'ai', name: 'Optional AI Captioning', status: cfg.flags.aiCaptionEnabled ? 'connected' : 'unconfigured', detail: cfg.flags.aiCaptionEnabled ? 'Enabled' : 'Disabled by config', checkedAt: now },
     ];
+    return {
+      validation,
+      connections,
+      readiness: {
+        configurationValid: true,
+        supabaseReachable: true,
+        databaseSchemaVerified: true,
+        atomicRpcTested: true,
+        rlsVerified: true,
+        n8nAuthenticated: true,
+        requiredWorkflowsConfigured: true,
+        downloaderAuthVerified: true,
+        cloudinaryAuthenticated: true,
+        instagramAuthenticated: true,
+        n8nEnvAccessOk: true,
+        readyForExtraction: true,
+        readyForPublishing: true,
+        readyForDeletion: true,
+      },
+    };
   }
 
-  const [sbHealth, dlHealth, wfCheck] = await Promise.all([
+  const wfEntries: Array<{ key: 'extract' | 'publish' | 'schedule' | 'content' | 'recovery'; id: string; required: boolean }> = [
+    { key: 'extract', id: cfg.workflows.extractId, required: true },
+    { key: 'publish', id: cfg.workflows.publishId, required: true },
+    { key: 'schedule', id: cfg.workflows.scheduleId, required: false },
+    { key: 'content', id: cfg.workflows.contentId, required: true },
+    { key: 'recovery', id: cfg.workflows.recoveryId, required: true },
+  ];
+
+  type RemoteRecoveryDiag = {
+    supabase?: { ok?: boolean; detail?: string };
+    sheets?: { ok?: boolean; detail?: string };
+    cloudinary?: { ok?: boolean; detail?: string };
+    instagram?: { ok?: boolean; detail?: string };
+    n8nEnv?: {
+      ok?: boolean;
+      envBlocked?: boolean;
+      livePublishEnabled?: boolean;
+      liveDeleteEnabled?: boolean;
+      schedulingEnabled?: boolean;
+      detail?: string;
+    };
+  };
+
+  const [sbDiag, dlAuth, wfChecks, remoteRecovery] = await Promise.all([
     cfg.supabaseUrl && cfg.supabaseServiceRoleKey
-      ? new SupabaseRepository(fetchImpl).checkHealth()
-      : Promise.resolve({ ok: false, detail: 'Missing SUPABASE_SERVICE_ROLE_KEY in .env.local', latencyMs: 0 }),
-    checkDownloaderHealth(fetchImpl, 8_000),
-    cfg.n8nApiKey && cfg.workflows.contentId
-      ? getWorkflowMetadata(cfg.workflows.contentId, fetchImpl)
-          .then((w) => ({ ok: true, active: w.active, name: w.name }))
-          .catch((e) => ({ ok: false, error: e instanceof Error ? e.message : String(e) }))
-      : Promise.resolve({ ok: false, error: 'Missing N8N_API_KEY or N8N_CONTENT_WORKFLOW_ID' }),
+      ? new SupabaseRepository(fetchImpl).getHealthDiagnostics()
+      : Promise.resolve({
+          ok: false,
+          reachable: false,
+          schemaVerified: false,
+          rlsVerified: false,
+          anonRevoked: false,
+          atomicRpcTested: false,
+          activeAccountsCount: 0,
+          detail: 'Missing SUPABASE_SERVICE_ROLE_KEY in .env.local',
+          latencyMs: 0,
+        }),
+    verifyDownloaderAuth(fetchImpl, 8_000),
+    cfg.n8nApiKey
+      ? Promise.all(
+          wfEntries.map(async (entry) => {
+            if (!entry.id) return { ...entry, ok: false, active: false, error: 'Not configured' };
+            try {
+              const meta = await getWorkflowMetadata(entry.id, fetchImpl);
+              return { ...entry, ok: true, active: meta.active, name: meta.name };
+            } catch (e) {
+              return { ...entry, ok: false, active: false, error: e instanceof Error ? e.message : String(e) };
+            }
+          }),
+        )
+      : Promise.resolve(wfEntries.map((entry) => ({ ...entry, ok: false, active: false, error: 'Missing N8N_API_KEY' }))),
+    cfg.n8nWebhookSecret && cfg.workflows.recoveryPath
+      ? n8nWebhookRequest<{ services?: RemoteRecoveryDiag }>(
+          cfg.workflows.recoveryPath,
+          { action: 'CHECK_CONNECTIONS', request_id: crypto.randomUUID() },
+          8_000,
+          fetchImpl,
+        )
+          .then((r) => r.services ?? null)
+          .catch(() => null)
+      : Promise.resolve(null),
   ]);
-
-  let remoteRecovery: Record<string, { ok?: boolean; detail?: string }> | null = null;
-  if (cfg.n8nWebhookSecret && cfg.workflows.recoveryPath) {
-    try {
-      const r = await n8nWebhookRequest<{ services?: Record<string, { ok?: boolean; detail?: string }> }>(
-        cfg.workflows.recoveryPath,
-        { action: 'CHECK_CONNECTIONS', request_id: crypto.randomUUID() },
-        15_000,
-        fetchImpl,
-      );
-      remoteRecovery = r.services ?? null;
-    } catch {
-      remoteRecovery = null;
-    }
-  }
 
   const lockStore = getLockStore();
   let lockOk = false;
   let lockDetail = 'Local fallback only (Supabase/Postgres lock backend missing; live publish/delete gated)';
-  if (lockStore.mode === 'supabase' || lockStore.mode === 'postgres') {
+  if (lockStore.mode === 'supabase') {
+    lockOk = sbDiag.ok && sbDiag.atomicRpcTested;
+    lockDetail = lockOk
+      ? 'Supabase atomic lock/renew/release RPCs & RLS self-test verified'
+      : `Supabase atomic RPC unverified: ${sbDiag.detail}`;
+  } else if (lockStore.mode === 'postgres') {
     try {
       await lockStore.ensureSchema();
       lockOk = true;
-      lockDetail =
-        lockStore.mode === 'supabase'
-          ? 'Supabase transactional RPC locking ready'
-          : 'PostgreSQL atomic instaops_v2 schema ready';
+      lockDetail = 'PostgreSQL atomic instaops_v2 schema verified';
     } catch (e) {
       lockDetail = `Lock store verification failed: ${e instanceof Error ? e.message : String(e)}`;
     }
   }
 
+  const contentWf = wfChecks.find((w) => w.key === 'content');
+  const extractWf = wfChecks.find((w) => w.key === 'extract');
+  const publishWf = wfChecks.find((w) => w.key === 'publish');
+  const recoveryWf = wfChecks.find((w) => w.key === 'recovery');
+
+  const n8nAuthenticated = Boolean(cfg.n8nApiKey) && wfChecks.some((w) => w.ok);
+  const requiredWorkflowsConfigured = Boolean(
+    extractWf?.ok && publishWf?.ok && contentWf?.ok && recoveryWf?.ok,
+  );
+  const allRequiredActive = Boolean(
+    extractWf?.active && publishWf?.active && contentWf?.active && recoveryWf?.active,
+  );
+
+  const cloudinaryAuthenticated = Boolean(remoteRecovery?.cloudinary?.ok);
+  const instagramAuthenticated = Boolean(remoteRecovery?.instagram?.ok);
+  const n8nEnvAccessOk = remoteRecovery?.n8nEnv?.ok !== false && remoteRecovery?.n8nEnv?.envBlocked !== true;
+  const n8nLivePublish = Boolean(remoteRecovery?.n8nEnv?.livePublishEnabled);
+  const n8nLiveDelete = Boolean(remoteRecovery?.n8nEnv?.liveDeleteEnabled);
+
+  const readiness: ReadinessMatrix = {
+    configurationValid: validation.valid,
+    supabaseReachable: sbDiag.reachable,
+    databaseSchemaVerified: sbDiag.schemaVerified,
+    atomicRpcTested: sbDiag.atomicRpcTested || (lockStore.mode === 'postgres' && lockOk),
+    rlsVerified: sbDiag.rlsVerified && sbDiag.anonRevoked,
+    n8nAuthenticated,
+    requiredWorkflowsConfigured,
+    downloaderAuthVerified: dlAuth.authVerified,
+    cloudinaryAuthenticated,
+    instagramAuthenticated,
+    n8nEnvAccessOk,
+    readyForExtraction: Boolean(
+      validation.valid &&
+        sbDiag.reachable &&
+        sbDiag.schemaVerified &&
+        lockOk &&
+        n8nAuthenticated &&
+        extractWf?.active &&
+        dlAuth.authVerified &&
+        cloudinaryAuthenticated &&
+        n8nEnvAccessOk,
+    ),
+    readyForPublishing: Boolean(
+      validation.valid &&
+        sbDiag.reachable &&
+        sbDiag.schemaVerified &&
+        sbDiag.rlsVerified &&
+        sbDiag.anonRevoked &&
+        lockOk &&
+        n8nAuthenticated &&
+        publishWf?.active &&
+        cloudinaryAuthenticated &&
+        instagramAuthenticated &&
+        cfg.flags.livePublishEnabled &&
+        n8nLivePublish &&
+        n8nEnvAccessOk,
+    ),
+    readyForDeletion: Boolean(
+      validation.valid &&
+        sbDiag.reachable &&
+        sbDiag.schemaVerified &&
+        sbDiag.rlsVerified &&
+        sbDiag.anonRevoked &&
+        lockOk &&
+        n8nAuthenticated &&
+        contentWf?.active &&
+        cloudinaryAuthenticated &&
+        cfg.flags.liveDeleteEnabled &&
+        n8nLiveDelete &&
+        n8nEnvAccessOk,
+    ),
+  };
+
   const statuses: ServiceConnectionStatus[] = [
     {
       id: 'supabase',
       name: 'Supabase PostgreSQL (Primary)',
-      status: !cfg.supabaseServiceRoleKey ? 'unconfigured' : sbHealth.ok ? 'connected' : 'offline',
-      detail: sbHealth.detail,
+      status: !cfg.supabaseServiceRoleKey
+        ? 'unconfigured'
+        : sbDiag.ok
+          ? 'connected'
+          : sbDiag.reachable
+            ? 'degraded'
+            : 'offline',
+      detail: sbDiag.ok ? `Schema, RLS & atomic RPC verified (${sbDiag.detail})` : sbDiag.detail,
       checkedAt: now,
-      latencyMs: sbHealth.latencyMs,
+      latencyMs: sbDiag.latencyMs,
     },
     {
       id: 'n8n',
       name: `Online n8n (${cfg.n8nBaseUrl})`,
-      status: wfCheck.ok ? ('active' in wfCheck && wfCheck.active ? 'connected' : 'degraded') : 'offline',
-      detail: wfCheck.ok
-        ? 'active' in wfCheck && wfCheck.active
-          ? `Content workflow active (${wfCheck.name})`
-          : 'Workflow imported but inactive in n8n'
-        : 'error' in wfCheck
-          ? String(wfCheck.error)
-          : 'Unreachable',
+      status: !cfg.n8nApiKey
+        ? 'unconfigured'
+        : n8nAuthenticated && allRequiredActive && n8nEnvAccessOk
+          ? 'connected'
+          : n8nAuthenticated
+            ? 'degraded'
+            : 'offline',
+      detail: !n8nAuthenticated
+        ? String((contentWf && 'error' in contentWf ? contentWf.error : undefined) ?? 'Unable to authenticate n8n REST API')
+        : !requiredWorkflowsConfigured
+          ? 'n8n API authenticated, but one or more W01-W05 workflow IDs are missing/invalid'
+          : !allRequiredActive
+            ? 'Workflows imported, but one or more required W01/W02/W04/W05 workflows are inactive'
+            : !n8nEnvAccessOk
+              ? `Active, but n8n $env/secret access blocked or incomplete (${remoteRecovery?.n8nEnv?.detail ?? 'check N8N_BLOCK_ENV_ACCESS_IN_NODE=false'})`
+              : 'All required workflows (W01, W02, W04, W05) active & verified',
       checkedAt: now,
     },
     {
       id: 'downloader',
       name: `Hosted Downloader (${cfg.downloaderBaseUrl})`,
-      status: dlHealth.ok ? 'connected' : 'offline',
-      detail: dlHealth.detail,
+      status: dlAuth.authVerified ? 'connected' : dlAuth.ok ? 'degraded' : 'offline',
+      detail: dlAuth.detail,
       checkedAt: now,
-      latencyMs: dlHealth.latencyMs,
+      latencyMs: dlAuth.latencyMs,
     },
     {
       id: 'sheets',
@@ -379,7 +551,7 @@ export async function getConnectionsHealth(
       id: 'cloudinary',
       name: `Cloudinary (${cfg.cloudinaryCloudName})`,
       status: remoteRecovery?.cloudinary?.ok ? 'connected' : 'unconfigured',
-      detail: remoteRecovery?.cloudinary?.detail ?? 'Verified via W04/W05 Cloudinary credential inside online n8n',
+      detail: remoteRecovery?.cloudinary?.detail ?? 'Verified via W05 Cloudinary API credential probe inside online n8n',
       checkedAt: now,
     },
     {
@@ -405,7 +577,14 @@ export async function getConnectionsHealth(
     },
   ];
 
-  return statuses;
+  return { readiness, connections: statuses, validation };
+}
+
+export async function getConnectionsHealth(
+  fetchImpl: typeof fetch = fetch,
+): Promise<ServiceConnectionStatus[]> {
+  const { connections } = await getReadinessDiagnostics(fetchImpl);
+  return connections;
 }
 
 export async function getOverviewData(fetchImpl: typeof fetch = fetch): Promise<OverviewResponse> {
@@ -415,10 +594,10 @@ export async function getOverviewData(fetchImpl: typeof fetch = fetch): Promise<
 
   if (cfg.demoMode) {
     const demo = getDemoState();
-    const [jobs, locks, connections] = await Promise.all([
+    const [jobs, locks, diag] = await Promise.all([
       lockStore.listJobs(50),
       lockStore.listActiveLocks(),
-      getConnectionsHealth(fetchImpl),
+      getReadinessDiagnostics(fetchImpl),
     ]);
     const activeAssets = demo.assets.filter((a) => a.storage_status === 'ACTIVE');
     const dueScheduled = demo.posts
@@ -454,7 +633,8 @@ export async function getOverviewData(fetchImpl: typeof fetch = fetch): Promise<
           .filter(Boolean)
           .sort()
           .at(-1) ?? null,
-      connections,
+      connections: diag.connections,
+      readiness: diag.readiness,
       storage: {
         configured: true,
         cloudName: cfg.cloudinaryCloudName,
@@ -483,7 +663,7 @@ export async function getOverviewData(fetchImpl: typeof fetch = fetch): Promise<
     };
   }
 
-  const [snapshotRes, execsRes, jobs, locks, connections] = await Promise.all([
+  const [snapshotRes, execsRes, jobs, locks, diag] = await Promise.all([
     loadRemoteSnapshot(fetchImpl).catch(() => ({
       posts: [] as ContentRecord[],
       assets: [] as MediaAssetRecord[],
@@ -503,7 +683,7 @@ export async function getOverviewData(fetchImpl: typeof fetch = fetch): Promise<
     listConfiguredWorkflowExecutions(25, fetchImpl).catch(() => [] as N8nExecutionSummary[]),
     lockStore.listJobs(50).catch(() => [] as DurableJob[]),
     lockStore.listActiveLocks().catch(() => [] as Awaited<ReturnType<typeof lockStore.listActiveLocks>>),
-    getConnectionsHealth(fetchImpl),
+    getReadinessDiagnostics(fetchImpl),
   ]);
 
   const dueScheduled = snapshotRes.posts
@@ -546,7 +726,8 @@ export async function getOverviewData(fetchImpl: typeof fetch = fetch): Promise<
         .filter(Boolean)
         .sort()
         .at(-1) ?? null,
-    connections,
+    connections: diag.connections,
+    readiness: diag.readiness,
     storage: snapshotRes.storage,
     posts: snapshotRes.posts,
     assets: snapshotRes.assets,
@@ -692,55 +873,90 @@ export async function triggerExtractPost(
   const requestId = crypto.randomUUID();
   const jobId = `job_${crypto.randomUUID().slice(0, 12)}`;
   const ownerId = `api:${requestId}`;
-  const idemKey = input.idempotencyKey ?? `extract:${postId}:${requestId}`;
 
-  await lockStore.claimIdempotency(idemKey, hashPayload({ postId, op: 'EXTRACT' }));
+  const ov = await getOverviewData(fetchImpl);
+  const post = ov.posts.find((p) => p.post_id === postId || p.id === postId);
+  if (!post) throw new AppError('POST_NOT_FOUND', `Post ${postId} not found.`, { httpStatus: 404 });
+
+  const elig = evaluatePostEligibility(post, {
+    rows: ov.posts,
+    assets: ov.assets,
+    executions: ov.executions,
+    canWrite: true,
+    schedulingEnabled: ov.flags.schedulingEnabled,
+    livePublishEnabled: ov.flags.livePublishEnabled,
+    liveDeleteEnabled: ov.flags.liveDeleteEnabled,
+    demoMode: ov.demo,
+    cooldown: ov.cooldown,
+  });
+
+  if (!elig.extract.enabled) {
+    throw new AppError(
+      ov.cooldown.blocked ? 'UPSTREAM_RATE_LIMIT' : elig.isDuplicateSource ? 'DUPLICATE_SOURCE' : 'POST_LOCKED',
+      elig.extract.reason,
+      { httpStatus: ov.cooldown.blocked ? 429 : 409 },
+    );
+  }
+
+  if (!cfg.demoMode) {
+    if (!cfg.workflows.extractId) {
+      throw new AppError('CONFIGURATION_ERROR', 'N8N_EXTRACT_WORKFLOW_ID is not configured.', { httpStatus: 500 });
+    }
+    const wf = await getWorkflowMetadata(cfg.workflows.extractId, fetchImpl);
+    if (!wf.active) {
+      throw new AppError('CONFIGURATION_ERROR', 'W01 Extract & Upload workflow is inactive in n8n.', { httpStatus: 409 });
+    }
+  }
+
+  const lockKey = canonicalPostLockKey(post);
+  const idemKey = input.idempotencyKey ?? `extract:${post.id ?? post.post_id}:${requestId}`;
+  const idemClaim = await lockStore.claimIdempotency(idemKey, hashPayload({ postId: post.post_id, op: 'EXTRACT' }));
+  if (!idemClaim.claimed) {
+    throw new AppError(
+      'POST_LOCKED',
+      `Duplicate extraction request rejected for ${post.post_id} (${idemClaim.existingState ?? 'IN_PROGRESS'}).`,
+      { httpStatus: 409 },
+    );
+  }
+
   await lockStore.acquireLock({
-    lock_key: `post:${postId}`,
-    post_id: postId,
+    lock_key: lockKey,
+    post_uuid: post.id,
+    post_id: post.post_id,
     operation: 'EXTRACT',
     owner_id: ownerId,
     request_id: requestId,
     leaseSeconds: 600,
   });
 
+  await lockStore.saveJob({
+    ...createJobRecord({
+      job_id: jobId,
+      request_id: requestId,
+      execution_id: '',
+      post_id: post.post_id,
+      operation: 'EXTRACT',
+      stage: 'VALIDATING',
+    }),
+    lock_key: lockKey,
+    lock_owner: ownerId,
+    status: 'QUEUED',
+  });
+
+  let dispatchAttempted = false;
   try {
-    const ov = await getOverviewData(fetchImpl);
-    const post = ov.posts.find((p) => p.post_id === postId);
-    if (!post) throw new AppError('POST_NOT_FOUND', `Post ${postId} not found.`, { httpStatus: 404 });
-
-    const elig = evaluatePostEligibility(post, {
-      rows: ov.posts,
-      assets: ov.assets,
-      executions: ov.executions,
-      canWrite: true,
-      schedulingEnabled: ov.flags.schedulingEnabled,
-      livePublishEnabled: ov.flags.livePublishEnabled,
-      liveDeleteEnabled: ov.flags.liveDeleteEnabled,
-      demoMode: ov.demo,
-      cooldown: ov.cooldown,
-    });
-
-    if (!elig.extract.enabled) {
-      throw new AppError(
-        ov.cooldown.blocked ? 'UPSTREAM_RATE_LIMIT' : elig.isDuplicateSource ? 'DUPLICATE_SOURCE' : 'POST_LOCKED',
-        elig.extract.reason,
-        { httpStatus: ov.cooldown.blocked ? 429 : 409 },
-      );
-    }
-
     if (cfg.demoMode) {
       const demo = getDemoState();
       const now = new Date().toISOString();
-      const fakeUrl = `https://res.cloudinary.com/${cfg.cloudinaryCloudName}/video/upload/v1795709999/${buildOwnedPublicId(postId, 0, post.source_id)}.mp4`;
+      const fakeUrl = `https://res.cloudinary.com/${cfg.cloudinaryCloudName}/video/upload/v1795709999/${buildOwnedPublicId(post.post_id, 0, post.source_id)}.mp4`;
       const asset: MediaAssetRecord = {
-        internal_asset_id: `ast_${postId}_0`,
-        post_id: postId,
+        internal_asset_id: `ast_${post.post_id}_0`,
+        post_id: post.post_id,
         media_index: 0,
         media_type: post.media_type === 'IMAGE' ? 'IMAGE' : 'VIDEO',
         source_expires_at: '',
-        cloudinary_public_id: buildOwnedPublicId(postId, 0, post.source_id),
-        cloudinary_asset_id: `cld_demo_${postId}`,
+        cloudinary_public_id: buildOwnedPublicId(post.post_id, 0, post.source_id),
+        cloudinary_asset_id: `cld_demo_${post.post_id}`,
         secure_url: fakeUrl,
         thumbnail_url: fakeUrl,
         resource_type: post.media_type === 'IMAGE' ? 'image' : 'video',
@@ -773,14 +989,14 @@ export async function triggerExtractPost(
         revision: bumpRevision(post.revision),
         approved_revision: '',
       };
-      demo.posts = demo.posts.map((p) => (p.post_id === postId ? updated : p));
-      demo.assets = [asset, ...demo.assets.filter((a) => a.post_id !== postId)];
+      demo.posts = demo.posts.map((p) => (p.post_id === post.post_id ? updated : p));
+      demo.assets = [asset, ...demo.assets.filter((a) => a.post_id !== post.post_id)];
       const execId = `demo-ext-${Date.now()}`;
       demo.executions.unshift({
         id: execId,
         workflowId: 'demo-w01',
         workflowName: 'W01 Extract & Upload (Demo)',
-        postId,
+        postId: post.post_id,
         operation: 'EXTRACT',
         status: 'success',
         mode: 'webhook',
@@ -790,24 +1006,19 @@ export async function triggerExtractPost(
         durationMs: 1200,
       });
       await lockStore.saveJob({
-        ...createJobRecord({ job_id: jobId, request_id: requestId, execution_id: execId, post_id: postId, operation: 'EXTRACT' }),
+        ...createJobRecord({ job_id: jobId, request_id: requestId, execution_id: execId, post_id: post.post_id, operation: 'EXTRACT' }),
+        lock_key: lockKey,
+        lock_owner: ownerId,
         stage: 'COMPLETED',
         status: 'COMPLETED',
         finished_at: now,
       });
       await lockStore.completeIdempotency(idemKey, 'SUCCEEDED', { ok: true, execution_id: execId });
-      await lockStore.releaseLock(`post:${postId}`, ownerId);
-      return { ok: true, accepted: true, request_id: requestId, job_id: jobId, execution_id: execId, post_id: postId, status: 'QUEUED' };
+      await lockStore.releaseLock(lockKey, ownerId);
+      return { ok: true, accepted: true, request_id: requestId, job_id: jobId, execution_id: execId, post_id: post.post_id, status: 'QUEUED' };
     }
 
-    if (!cfg.workflows.extractId) {
-      throw new AppError('CONFIGURATION_ERROR', 'N8N_EXTRACT_WORKFLOW_ID is not configured.', { httpStatus: 500 });
-    }
-    const wf = await getWorkflowMetadata(cfg.workflows.extractId, fetchImpl);
-    if (!wf.active) {
-      throw new AppError('CONFIGURATION_ERROR', 'W01 Extract & Upload workflow is inactive in n8n.', { httpStatus: 409 });
-    }
-
+    dispatchAttempted = true;
     const hookRes = await n8nWebhookRequest<{ accepted?: boolean; execution_id?: string }>(
       cfg.workflows.extractPath,
       {
@@ -818,6 +1029,7 @@ export async function triggerExtractPost(
         expected_revision: post.revision,
         request_id: requestId,
         job_id: jobId,
+        lock_key: lockKey,
         lock_owner: ownerId,
         authorized: true,
       },
@@ -837,10 +1049,12 @@ export async function triggerExtractPost(
         job_id: jobId,
         request_id: requestId,
         execution_id: execId,
-        post_id: postId,
+        post_id: post.post_id,
         operation: 'EXTRACT',
         stage: 'FETCHING_SOURCE',
       }),
+      lock_key: lockKey,
+      lock_owner: ownerId,
       status: 'RUNNING',
     });
     const out: AcceptedJobResponse = {
@@ -849,18 +1063,38 @@ export async function triggerExtractPost(
       request_id: requestId,
       job_id: jobId,
       execution_id: execId,
-      post_id: postId,
+      post_id: post.post_id,
       status: 'QUEUED',
     };
     await lockStore.completeIdempotency(idemKey, 'SUCCEEDED', out);
     return out;
   } catch (err) {
-    await lockStore.releaseLock(`post:${postId}`, ownerId);
+    const preSideEffect =
+      !dispatchAttempted || (err instanceof AppError && err.httpStatus >= 400 && err.httpStatus < 500);
+    await lockStore.saveJob({
+      ...createJobRecord({
+        job_id: jobId,
+        request_id: requestId,
+        post_id: post.post_id,
+        operation: 'EXTRACT',
+        stage: preSideEffect ? 'FAILED' : 'OUTCOME_UNKNOWN',
+      }),
+      lock_key: lockKey,
+      lock_owner: ownerId,
+      status: preSideEffect ? 'FAILED' : 'OUTCOME_UNKNOWN',
+      error_code: err instanceof AppError ? err.code : 'DOWNLOADER_UNAVAILABLE',
+      error_message: err instanceof Error ? err.message : String(err),
+      finished_at: preSideEffect ? new Date().toISOString() : undefined,
+    });
+    if (preSideEffect) {
+      await lockStore.completeIdempotency(idemKey, 'FAILED', { ok: false, error: err instanceof Error ? err.message : String(err) });
+      await lockStore.releaseLock(lockKey, ownerId);
+    }
     throw err;
   }
 }
 
-/** Second click: Publish only the selected reviewed Reel/Image with explicit atomic lock & revision binding. */
+/** Second click: Publish only the selected reviewed Reel/Image/Carousel with explicit atomic lock, persisted approval & timeout lock preservation. */
 export async function triggerPublishPost(
   postId: string,
   input: PublishPostInput,
@@ -886,57 +1120,85 @@ export async function triggerPublishPost(
     );
   }
 
+  let ov = await getOverviewData(fetchImpl);
+  const initialPost = ov.posts.find((p) => p.post_id === postId || p.id === postId);
+  if (!initialPost) throw new AppError('POST_NOT_FOUND', `Post ${postId} not found.`, { httpStatus: 404 });
+  let post: ContentRecord = initialPost;
+
+  if (post.revision !== input.reviewedRevision) {
+    throw new AppError(
+      'REVISION_CONFLICT',
+      `Content changed since review (expected rev ${input.reviewedRevision}, actual ${post.revision}). Refresh and review again.`,
+      { httpStatus: 409 },
+    );
+  }
+
+  if (!cfg.demoMode) {
+    if (!cfg.workflows.publishId) {
+      throw new AppError('CONFIGURATION_ERROR', 'N8N_PUBLISH_WORKFLOW_ID is not configured.', { httpStatus: 500 });
+    }
+    const wf = await getWorkflowMetadata(cfg.workflows.publishId, fetchImpl);
+    if (!wf.active) {
+      throw new AppError('CONFIGURATION_ERROR', 'W02 Publish Content workflow is inactive in n8n.', { httpStatus: 409 });
+    }
+    if (isSupabasePrimaryConfigured() && post.id) {
+      const repo = new SupabaseRepository(fetchImpl);
+      const acctEnabled = await repo.isDestinationAccountEnabled(post.ig_user_id || cfg.instagramUserId, post.account_key);
+      if (!acctEnabled) {
+        throw new AppError('CONFIGURATION_ERROR', 'Destination Instagram account is disabled or missing in database.', {
+          httpStatus: 422,
+        });
+      }
+      if (await repo.hasUnresolvedPublishAttempt(post.id)) {
+        throw new AppError('POST_LOCKED', `Unresolved previous publication attempt exists for ${post.post_id}. Reconcile first.`, {
+          httpStatus: 409,
+        });
+      }
+    }
+  }
+
   const lockStore = getLockStore();
   const requestId = crypto.randomUUID();
   const jobId = `job_${crypto.randomUUID().slice(0, 12)}`;
   const ownerId = `pub:${requestId}`;
-  const idemKey = input.idempotencyKey ?? `publish:${postId}:${input.reviewedRevision}`;
+  const lockKey = canonicalPostLockKey(post);
+  const idemKey = input.idempotencyKey ?? `publish:${post.id ?? post.post_id}:${input.reviewedRevision}`;
 
   const claim = await lockStore.claimIdempotency<AcceptedJobResponse>(
     idemKey,
-    hashPayload({ postId, rev: input.reviewedRevision, op: 'PUBLISH' }),
+    hashPayload({ postId: post.post_id, rev: input.reviewedRevision, op: 'PUBLISH' }),
   );
   if (!claim.claimed) {
     throw new AppError(
       'POST_LOCKED',
-      `Duplicate publish request rejected for ${postId} revision ${input.reviewedRevision} (${claim.existingState ?? 'IN_PROGRESS'}).`,
+      `Duplicate publish request rejected for ${post.post_id} revision ${input.reviewedRevision} (${claim.existingState ?? 'IN_PROGRESS'}).`,
       { httpStatus: 409 },
     );
   }
 
   await lockStore.acquireLock({
-    lock_key: `post:${postId}`,
-    post_id: postId,
+    lock_key: lockKey,
+    post_uuid: post.id,
+    post_id: post.post_id,
     operation: 'PUBLISH',
     owner_id: ownerId,
     request_id: requestId,
     leaseSeconds: 600,
   });
 
+  let dispatchAttempted = false;
   try {
-    let ov = await getOverviewData(fetchImpl);
-    let post = ov.posts.find((p) => p.post_id === postId);
-    if (!post) throw new AppError('POST_NOT_FOUND', `Post ${postId} not found.`, { httpStatus: 404 });
-
-    if (post.revision !== input.reviewedRevision) {
-      throw new AppError(
-        'REVISION_CONFLICT',
-        `Content changed since review (expected rev ${input.reviewedRevision}, actual ${post.revision}). Refresh and review again.`,
-        { httpStatus: 409 },
-      );
-    }
-
     if (input.caption !== undefined && input.caption !== post.caption) {
       validateCaptionLength(input.caption, {
         allowEmpty: input.allowEmptyCaption === true || Boolean(post.original_caption.trim()),
       });
       post = await updatePostRecord(
-        postId,
+        post.post_id,
         { caption: input.caption, allowEmptyCaption: input.allowEmptyCaption },
         fetchImpl,
       );
       ov = await getOverviewData(fetchImpl);
-      post = ov.posts.find((p) => p.post_id === postId) ?? post;
+      post = ov.posts.find((p) => p.post_id === post.post_id) ?? post;
     }
 
     const elig = evaluatePostEligibility(post, {
@@ -958,6 +1220,31 @@ export async function triggerPublishPost(
         { httpStatus: elig.isCarousel ? 422 : 409 },
       );
     }
+
+    // Persist manual approval atomically BEFORE dispatching W02 or saving durable job
+    if (cfg.demoMode) {
+      const demo = getDemoState();
+      post = { ...post, approved_revision: post.revision, updated_at: new Date().toISOString() };
+      demo.posts = demo.posts.map((p) => (p.post_id === post.post_id ? post : p));
+    } else if (isSupabasePrimaryConfigured() && post.id) {
+      post = await new SupabaseRepository(fetchImpl).approvePostRevision(post.id, Number(post.revision));
+    } else {
+      post = { ...post, approved_revision: post.revision };
+    }
+
+    await lockStore.saveJob({
+      ...createJobRecord({
+        job_id: jobId,
+        request_id: requestId,
+        execution_id: '',
+        post_id: post.post_id,
+        operation: 'PUBLISH',
+        stage: 'CREATING_CONTAINER',
+      }),
+      lock_key: lockKey,
+      lock_owner: ownerId,
+      status: 'QUEUED',
+    });
 
     const postAssets = ov.assets
       .filter((a) => (a.post_id === post.post_id || (post.id && a.post_uuid === post.id)) && a.storage_status === 'ACTIVE')
@@ -1013,38 +1300,36 @@ export async function triggerPublishPost(
       });
       await lockStore.saveJob({
         ...createJobRecord({ job_id: jobId, request_id: requestId, execution_id: execId, post_id: post.post_id, operation: 'PUBLISH' }),
+        lock_key: lockKey,
+        lock_owner: ownerId,
         stage: 'COMPLETED',
         status: 'COMPLETED',
         finished_at: now,
       });
       await lockStore.completeIdempotency(idemKey, 'SUCCEEDED', { ok: true, execution_id: execId });
-      await lockStore.releaseLock(`post:${postId}`, ownerId);
+      await lockStore.releaseLock(lockKey, ownerId);
       return { ok: true, accepted: true, request_id: requestId, job_id: jobId, execution_id: execId, post_id: post.post_id, status: 'QUEUED' };
     }
 
-    if (!cfg.workflows.publishId) {
-      throw new AppError('CONFIGURATION_ERROR', 'N8N_PUBLISH_WORKFLOW_ID is not configured.', { httpStatus: 500 });
-    }
-    const wf = await getWorkflowMetadata(cfg.workflows.publishId, fetchImpl);
-    if (!wf.active) {
-      throw new AppError('CONFIGURATION_ERROR', 'W02 Publish Content workflow is inactive in n8n.', { httpStatus: 409 });
-    }
-
+    dispatchAttempted = true;
     const hookRes = await n8nWebhookRequest<{ accepted?: boolean; execution_id?: string }>(
       cfg.workflows.publishPath,
       {
         action: 'PUBLISH',
         post_uuid: post.id ?? '',
         post_id: post.post_id,
-        ig_user_id: cfg.instagramUserId,
+        account_key: post.account_key,
+        ig_user_id: post.ig_user_id || cfg.instagramUserId,
         media_type: post.media_type,
         caption: post.caption || post.original_caption,
         media_url: post.media_url,
         media_items: mediaItems,
         reviewed_revision: post.revision,
+        approved_revision: post.revision,
         review_snapshot: reviewedSnapshot,
         request_id: requestId,
         job_id: jobId,
+        lock_key: lockKey,
         lock_owner: ownerId,
         confirm: true,
       },
@@ -1053,9 +1338,11 @@ export async function triggerPublishPost(
     );
 
     if (hookRes.accepted !== true || !hookRes.execution_id) {
-      throw new AppError('PUBLISH_OUTCOME_UNKNOWN', 'Online n8n W02 did not confirm execution acceptance; reconcile before retrying.', {
-        httpStatus: 502,
-      });
+      throw new AppError(
+        'PUBLISH_OUTCOME_UNKNOWN',
+        'Online n8n W02 did not confirm execution acceptance; reconcile before retrying.',
+        { httpStatus: 502 },
+      );
     }
 
     const execId = String(hookRes.execution_id);
@@ -1064,10 +1351,12 @@ export async function triggerPublishPost(
         job_id: jobId,
         request_id: requestId,
         execution_id: execId,
-        post_id: postId,
+        post_id: post.post_id,
         operation: 'PUBLISH',
         stage: 'CREATING_CONTAINER',
       }),
+      lock_key: lockKey,
+      lock_owner: ownerId,
       status: 'RUNNING',
     });
 
@@ -1077,14 +1366,77 @@ export async function triggerPublishPost(
       request_id: requestId,
       job_id: jobId,
       execution_id: execId,
-      post_id: postId,
+      post_id: post.post_id,
       status: 'QUEUED',
     };
     await lockStore.completeIdempotency(idemKey, 'SUCCEEDED', out);
     return out;
   } catch (err) {
-    await lockStore.releaseLock(`post:${postId}`, ownerId);
-    throw err;
+    const preSideEffect =
+      !dispatchAttempted ||
+      (err instanceof AppError &&
+        err.httpStatus >= 400 &&
+        err.httpStatus < 500 &&
+        err.code !== 'PUBLISH_OUTCOME_UNKNOWN');
+
+    if (preSideEffect) {
+      await lockStore.saveJob({
+        ...createJobRecord({
+          job_id: jobId,
+          request_id: requestId,
+          post_id: post.post_id,
+          operation: 'PUBLISH',
+          stage: 'FAILED',
+        }),
+        lock_key: lockKey,
+        lock_owner: ownerId,
+        status: 'FAILED',
+        error_code: err instanceof AppError ? err.code : 'INSTAGRAM_PUBLISH_FAILED',
+        error_message: err instanceof Error ? err.message : String(err),
+        finished_at: new Date().toISOString(),
+      });
+      await lockStore.completeIdempotency(idemKey, 'FAILED', { ok: false, error: err instanceof Error ? err.message : String(err) });
+      await lockStore.releaseLock(lockKey, ownerId);
+      throw err;
+    }
+
+    // Uncertain publication dispatch (e.g., webhook timeout / 5xx after transfer): NEVER release the lock!
+    const errMsg = err instanceof Error ? err.message : String(err);
+    await lockStore.saveJob({
+      ...createJobRecord({
+        job_id: jobId,
+        request_id: requestId,
+        post_id: post.post_id,
+        operation: 'PUBLISH',
+        stage: 'OUTCOME_UNKNOWN',
+      }),
+      lock_key: lockKey,
+      lock_owner: ownerId,
+      status: 'OUTCOME_UNKNOWN',
+      error_code: 'PUBLISH_OUTCOME_UNKNOWN',
+      error_message: errMsg,
+    });
+    if (isSupabasePrimaryConfigured() && post.id) {
+      await new SupabaseRepository(fetchImpl)
+        .updatePost(
+          {
+            ...post,
+            status: 'VERIFY_MANUALLY',
+            error_code: 'PUBLISH_OUTCOME_UNKNOWN',
+            error_stage: 'PUBLISH_REQUESTED',
+            error: `Uncertain W02 publish outcome (${errMsg.slice(0, 220)}); verify provider before retrying.`,
+          },
+          'PUBLISH_TIMEOUT',
+        )
+        .catch(() => undefined);
+    }
+    throw err instanceof AppError && err.code === 'PUBLISH_OUTCOME_UNKNOWN'
+      ? err
+      : new AppError(
+          'PUBLISH_OUTCOME_UNKNOWN',
+          `Publish webhook outcome uncertain (${errMsg}); lock preserved until manual reconciliation.`,
+          { httpStatus: 502 },
+        );
   }
 }
 
@@ -1146,18 +1498,50 @@ export async function schedulePost(
 
   if (isSupabasePrimaryConfigured()) {
     const repo = new SupabaseRepository(fetchImpl);
-    const updated = await repo.updatePost(
-      {
-        ...post,
-        publish_mode: 'LATER',
-        publish_at: scheduledUtc,
-        status: 'SCHEDULED',
-        approved_revision: post.revision,
-      },
-      'SCHEDULE',
-    );
-    void flushSyncQueueToSheets(fetchImpl).catch(() => undefined);
-    return updated;
+    if (post.id && (await repo.hasUnresolvedPublishAttempt(post.id))) {
+      throw new AppError('POST_LOCKED', `Unresolved previous publication attempt exists for ${post.post_id}. Reconcile first.`, {
+        httpStatus: 409,
+      });
+    }
+    if (cfg.instagramUserId || post.ig_user_id) {
+      const enabled = await repo.isDestinationAccountEnabled(post.ig_user_id || cfg.instagramUserId, post.account_key);
+      if (!enabled) {
+        throw new AppError(
+          'CONFIGURATION_ERROR',
+          `Destination Instagram account (${post.account_key} / ${post.ig_user_id || cfg.instagramUserId}) is disabled in instaops_accounts.`,
+          { httpStatus: 409 },
+        );
+      }
+    }
+    const lockStore = getLockStore();
+    const lockKey = canonicalPostLockKey(post);
+    const reqId = crypto.randomUUID();
+    const ownerId = `sched:${reqId}`;
+    await lockStore.acquireLock({
+      lock_key: lockKey,
+      post_uuid: post.id,
+      post_id: post.post_id,
+      operation: 'SCHEDULE',
+      owner_id: ownerId,
+      request_id: reqId,
+      leaseSeconds: 120,
+    });
+    try {
+      const updated = await repo.updatePost(
+        {
+          ...post,
+          publish_mode: 'LATER',
+          publish_at: scheduledUtc,
+          status: 'SCHEDULED',
+          approved_revision: post.revision,
+        },
+        'SCHEDULE',
+      );
+      void flushSyncQueueToSheets(fetchImpl).catch(() => undefined);
+      return updated;
+    } finally {
+      await lockStore.releaseLock(lockKey, ownerId).catch(() => undefined);
+    }
   }
 
   const res = await n8nWebhookRequest<{ ok: true; row: Record<string, unknown> }>(
@@ -1267,6 +1651,54 @@ export async function archivePost(
   return normalizeContentRecord(res.row);
 }
 
+async function loadAuthoritativeDeletionState(
+  postOrId: string,
+  fetchImpl: typeof fetch,
+): Promise<{ post: ContentRecord; assets: MediaAssetRecord[] }> {
+  if (isSupabasePrimaryConfigured()) {
+    const repo = new SupabaseRepository(fetchImpl);
+    const post = await repo.getPostByIdOrUuid(postOrId);
+    if (!post) throw new AppError('POST_NOT_FOUND', `Post ${postOrId} not found.`, { httpStatus: 404 });
+    const assets = await repo.listMediaAssets(post.post_id);
+    return { post, assets };
+  }
+  const ov = await getOverviewData(fetchImpl);
+  const post = ov.posts.find((p) => p.post_id === postOrId || p.id === postOrId);
+  if (!post) throw new AppError('POST_NOT_FOUND', `Post ${postOrId} not found.`, { httpStatus: 404 });
+  return { post, assets: ov.assets };
+}
+
+function classifyDeletionOutcomesStrict(
+  requestedAssets: MediaAssetRecord[],
+  rawOutcomes: Array<{ internal_asset_id?: string; public_id?: string; result?: string; error?: string }> | undefined,
+): {
+  confirmedIds: string[];
+  failedList: Array<{ internal_asset_id: string; error: string }>;
+} {
+  const summary = summarizeDeletionOutcomes(
+    (rawOutcomes ?? []).map((o) => ({
+      internal_asset_id: String(o.internal_asset_id ?? ''),
+      public_id: String(o.public_id ?? ''),
+      result: o.result,
+      error: o.error,
+    })),
+  );
+  const confirmedSet = new Set([...summary.succeededIds, ...summary.alreadyMissingIds]);
+  const failedMap = new Map<string, string>();
+  for (const f of summary.failed) {
+    if (f.internal_asset_id) failedMap.set(f.internal_asset_id, f.error);
+  }
+  for (const a of requestedAssets) {
+    if (!confirmedSet.has(a.internal_asset_id) && !failedMap.has(a.internal_asset_id)) {
+      failedMap.set(a.internal_asset_id, 'Deletion outcome missing/unconfirmed from Cloudinary destroy response.');
+    }
+  }
+  return {
+    confirmedIds: Array.from(confirmedSet),
+    failedList: Array.from(failedMap.entries()).map(([internal_asset_id, error]) => ({ internal_asset_id, error })),
+  };
+}
+
 /** Option A: Permanently delete Cloudinary assets owned by this post while preserving the post record. */
 export async function deletePostMedia(
   postId: string,
@@ -1276,7 +1708,7 @@ export async function deletePostMedia(
   const cfg = getConfig();
   const hasDurableCoord =
     (cfg.atomicLockProvider === 'supabase' && Boolean(cfg.supabaseUrl && cfg.supabaseServiceRoleKey)) ||
-    Boolean(cfg.databaseUrl);
+    (cfg.atomicLockProvider === 'postgres' && Boolean(cfg.databaseUrl));
   if (!input.confirm) throw new AppError('UNAUTHORIZED_CONTENT', 'Confirmation required.', { httpStatus: 403 });
   if (!cfg.demoMode && (!cfg.flags.liveDeleteEnabled || !hasDurableCoord)) {
     throw new AppError(
@@ -1286,46 +1718,66 @@ export async function deletePostMedia(
     );
   }
 
+  const { post, assets } = await loadAuthoritativeDeletionState(postId, fetchImpl);
+  if (['PUBLISHING', 'VERIFY_MANUALLY', 'EXTRACTING', 'UPLOADING'].includes(post.status)) {
+    throw new AppError('POST_LOCKED', `Cannot delete media while post ${post.post_id} is ${post.status}.`, {
+      httpStatus: 409,
+    });
+  }
+
+  const ownedAssets = assets.filter(
+    (a) => a.post_id === post.post_id && ['ACTIVE', 'DELETE_PENDING', 'PARTIAL_DELETE'].includes(a.storage_status),
+  );
+  if (!ownedAssets.length) {
+    throw new AppError('MEDIA_UNAVAILABLE', `Post ${post.post_id} has no active managed Cloudinary assets.`, {
+      httpStatus: 404,
+    });
+  }
+  for (const asset of ownedAssets) {
+    assertDeletableAssetOwnership(asset, post);
+  }
+
   const lockStore = getLockStore();
   const requestId = crypto.randomUUID();
+  const jobId = `job_${crypto.randomUUID().slice(0, 12)}`;
   const ownerId = `delmedia:${requestId}`;
+  const lockKey = canonicalPostLockKey(post);
+
   await lockStore.acquireLock({
-    lock_key: `post:${postId}`,
-    post_id: postId,
+    lock_key: lockKey,
+    post_uuid: post.id,
+    post_id: post.post_id,
     operation: 'DELETE_MEDIA',
     owner_id: ownerId,
     request_id: requestId,
     leaseSeconds: 300,
   });
 
+  await lockStore.saveJob({
+    ...createJobRecord({
+      job_id: jobId,
+      request_id: requestId,
+      post_id: post.post_id,
+      operation: 'DELETE_MEDIA',
+      stage: 'DELETING_ASSETS',
+    }),
+    lock_key: lockKey,
+    lock_owner: ownerId,
+    status: 'RUNNING',
+  });
+
   try {
-    const ov = await getOverviewData(fetchImpl);
-    const post = ov.posts.find((p) => p.post_id === postId);
-    if (!post) throw new AppError('POST_NOT_FOUND', `Post ${postId} not found.`, { httpStatus: 404 });
-
-    const ownedAssets = ov.assets.filter(
-      (a) => a.post_id === postId && a.storage_status === 'ACTIVE',
-    );
-    if (!ownedAssets.length) {
-      throw new AppError('MEDIA_UNAVAILABLE', `Post ${postId} has no active managed Cloudinary assets.`, {
-        httpStatus: 404,
-      });
-    }
-    for (const asset of ownedAssets) {
-      assertDeletableAssetOwnership(asset, post);
-    }
-
     if (cfg.demoMode) {
       const demo = getDemoState();
       const now = new Date().toISOString();
       demo.assets = demo.assets.map((a) =>
-        a.post_id === postId && a.storage_status === 'ACTIVE'
+        a.post_id === post.post_id && a.storage_status === 'ACTIVE'
           ? { ...a, storage_status: 'DELETED', deleted_at: now, updated_at: now }
           : a,
       );
       const nextStatus = isPublishedRecord(post) ? post.status : 'MEDIA_DELETED';
       demo.posts = demo.posts.map((p) =>
-        p.post_id === postId
+        p.post_id === post.post_id
           ? {
               ...p,
               media_url: '',
@@ -1339,17 +1791,36 @@ export async function deletePostMedia(
             }
           : p,
       );
+      await lockStore.saveJob({
+        ...createJobRecord({ job_id: jobId, request_id: requestId, post_id: post.post_id, operation: 'DELETE_MEDIA', stage: 'COMPLETED' }),
+        status: 'COMPLETED',
+        finished_at: now,
+      });
       return {
-        post_id: postId,
+        post_id: post.post_id,
         deletedAssets: ownedAssets.map((a) => a.internal_asset_id),
         status: nextStatus,
       };
     }
 
+    if (!cfg.n8nWebhookSecret) {
+      throw new AppError('CONFIGURATION_ERROR', 'N8N_WEBHOOK_SECRET is required to destroy Cloudinary media.', {
+        httpStatus: 500,
+      });
+    }
+
+    const repo = isSupabasePrimaryConfigured() && post.id ? new SupabaseRepository(fetchImpl) : null;
+    if (repo && post.id) {
+      await repo.markAssetsDeletePending(
+        post.id,
+        ownedAssets.map((a) => a.internal_asset_id),
+      );
+    }
+
     const res = await n8nWebhookRequest<{
       ok: true;
-      outcomes: Array<{ internal_asset_id: string; public_id: string; result?: string; error?: string }>;
-      status: string;
+      outcomes?: Array<{ internal_asset_id?: string; public_id?: string; result?: string; error?: string }>;
+      status?: string;
     }>(
       cfg.workflows.contentPath,
       {
@@ -1358,9 +1829,11 @@ export async function deletePostMedia(
         post_id: post.post_id,
         asset_ids: ownedAssets.map((a) => a.internal_asset_id),
         assets: ownedAssets.map((a) => ({
+          asset_uuid: a.id ?? '',
           internal_asset_id: a.internal_asset_id,
           public_id: a.cloudinary_public_id,
           resource_type: a.resource_type,
+          delivery_type: a.delivery_type,
         })),
         confirm: true,
         request_id: requestId,
@@ -1369,27 +1842,50 @@ export async function deletePostMedia(
       fetchImpl,
     );
 
-    const summary = summarizeDeletionOutcomes(res.outcomes ?? []);
-    if (!summary.allConfirmedGone) {
+    const { confirmedIds, failedList } = classifyDeletionOutcomesStrict(ownedAssets, res.outcomes);
+    const nextStatus = isPublishedRecord(post) ? post.status : failedList.length > 0 ? 'FAILED' : 'MEDIA_DELETED';
+
+    if (repo && post.id) {
+      try {
+        await repo.finalizeDeletionCheckpoint({
+          postUuid: post.id,
+          operation: 'DELETE_MEDIA',
+          confirmedAssetIds: confirmedIds,
+          failedAssets: failedList,
+          reason: input.reason,
+          jobId,
+          lockKey,
+          lockOwner: ownerId,
+        });
+        void flushSyncQueueToSheets(fetchImpl).catch(() => undefined);
+      } catch (dbErr) {
+        await lockStore.saveJob({
+          ...createJobRecord({ job_id: jobId, request_id: requestId, post_id: post.post_id, operation: 'DELETE_MEDIA', stage: 'OUTCOME_UNKNOWN' }),
+          lock_key: lockKey,
+          lock_owner: ownerId,
+          status: 'OUTCOME_UNKNOWN',
+          error_code: 'DELETE_OUTCOME_UNKNOWN',
+          error_message: `Confirmed Cloudinary delete (${confirmedIds.join(',')}), DB update failed: ${dbErr instanceof Error ? dbErr.message : String(dbErr)}`,
+        });
+        throw dbErr;
+      }
+    }
+
+    if (failedList.length > 0) {
       throw new AppError(
         'CLOUDINARY_DELETE_FAILED',
-        `Partial Cloudinary deletion failure (${summary.failed.length} asset(s) failed). Run Asset Reconciliation in Recovery Center.`,
-        { httpStatus: 502, details: { failed: summary.failed } },
+        `Partial Cloudinary deletion failure (${failedList.length} asset(s) failed; ${confirmedIds.length} checkpointed as deleted).`,
+        { httpStatus: 502, details: { confirmedIds, failed: failedList } },
       );
     }
-    const goneIds = [...summary.succeededIds, ...summary.alreadyMissingIds];
-    const nextStatus = isPublishedRecord(post) ? post.status : 'MEDIA_DELETED';
-    if (isSupabasePrimaryConfigured() && post.id) {
-      await new SupabaseRepository(fetchImpl).markAssetsDeleted(post.id, goneIds, nextStatus);
-      void flushSyncQueueToSheets(fetchImpl).catch(() => undefined);
-    }
+
     return {
       post_id: post.post_id,
-      deletedAssets: goneIds,
+      deletedAssets: confirmedIds,
       status: nextStatus,
     };
   } finally {
-    await lockStore.releaseLock(`post:${postId}`, ownerId);
+    await lockStore.releaseLock(lockKey, ownerId);
   }
 }
 
@@ -1402,7 +1898,7 @@ export async function deleteSingleMediaAsset(
   const cfg = getConfig();
   const hasDurableCoord =
     (cfg.atomicLockProvider === 'supabase' && Boolean(cfg.supabaseUrl && cfg.supabaseServiceRoleKey)) ||
-    Boolean(cfg.databaseUrl);
+    (cfg.atomicLockProvider === 'postgres' && Boolean(cfg.databaseUrl));
   if (!input.confirm) throw new AppError('UNAUTHORIZED_CONTENT', 'Confirmation required.', { httpStatus: 403 });
   if (!cfg.demoMode && (!cfg.flags.liveDeleteEnabled || !hasDurableCoord)) {
     throw new AppError('CONFIGURATION_ERROR', 'Live deletion requires LIVE_DELETE_ENABLED=true and Supabase/Postgres locking.', {
@@ -1410,30 +1906,42 @@ export async function deleteSingleMediaAsset(
     });
   }
 
-  const ov = await getOverviewData(fetchImpl);
-  const asset = ov.assets.find((a) => a.internal_asset_id === internalAssetId);
+  let asset: MediaAssetRecord | undefined;
+  let parent: ContentRecord | undefined;
+  if (isSupabasePrimaryConfigured()) {
+    const repo = new SupabaseRepository(fetchImpl);
+    const allAssets = await repo.listMediaAssets();
+    asset = allAssets.find((a) => a.internal_asset_id === internalAssetId || a.id === internalAssetId);
+    if (asset) {
+      parent = (await repo.getPostByIdOrUuid(asset.post_uuid || asset.post_id)) ?? undefined;
+    }
+  } else {
+    const ov = await getOverviewData(fetchImpl);
+    asset = ov.assets.find((a) => a.internal_asset_id === internalAssetId);
+    parent = asset ? ov.posts.find((p) => p.post_id === asset!.post_id) : undefined;
+  }
+
   if (!asset) {
     throw new AppError('POST_NOT_FOUND', `Media asset ${internalAssetId} not found in MediaAssets records.`, {
       httpStatus: 404,
     });
   }
-  const parent = ov.posts.find((p) => p.post_id === asset.post_id);
   assertDeletableAssetOwnership(asset, parent);
 
   if (cfg.demoMode) {
     const demo = getDemoState();
     const now = new Date().toISOString();
     demo.assets = demo.assets.map((a) =>
-      a.internal_asset_id === internalAssetId
+      a.internal_asset_id === asset.internal_asset_id
         ? { ...a, storage_status: 'DELETED', deleted_at: now, updated_at: now }
         : a,
     );
     const remaining = demo.assets.filter(
-      (a) => a.post_id === asset.post_id && a.storage_status === 'ACTIVE',
+      (a) => a.post_id === asset!.post_id && a.storage_status === 'ACTIVE',
     );
     if (parent) {
       demo.posts = demo.posts.map((p) =>
-        p.post_id === asset.post_id
+        p.post_id === asset!.post_id
           ? {
               ...p,
               media_url: remaining[0]?.secure_url ?? '',
@@ -1445,14 +1953,23 @@ export async function deleteSingleMediaAsset(
           : p,
       );
     }
-    return { internal_asset_id: internalAssetId, storage_status: 'DELETED' };
+    return { internal_asset_id: asset.internal_asset_id, storage_status: 'DELETED' };
+  }
+
+  if (!cfg.n8nWebhookSecret) {
+    throw new AppError('CONFIGURATION_ERROR', 'N8N_WEBHOOK_SECRET is required to destroy Cloudinary media.', {
+      httpStatus: 500,
+    });
   }
 
   const lockStore = getLockStore();
   const requestId = crypto.randomUUID();
+  const jobId = `job_${crypto.randomUUID().slice(0, 12)}`;
   const ownerId = `delasset:${requestId}`;
+  const lockKey = parent ? canonicalPostLockKey(parent) : `post:${asset.post_id}`;
   await lockStore.acquireLock({
-    lock_key: `post:${asset.post_id}`,
+    lock_key: lockKey,
+    post_uuid: parent?.id,
     post_id: asset.post_id,
     operation: 'DELETE_MEDIA',
     owner_id: ownerId,
@@ -1460,19 +1977,36 @@ export async function deleteSingleMediaAsset(
     leaseSeconds: 300,
   });
 
+  await lockStore.saveJob({
+    ...createJobRecord({ job_id: jobId, request_id: requestId, post_id: asset.post_id, operation: 'DELETE_MEDIA', stage: 'DELETING_ASSETS' }),
+    lock_key: lockKey,
+    lock_owner: ownerId,
+    status: 'RUNNING',
+  });
+
   try {
-    await n8nWebhookRequest(
+    const repo = isSupabasePrimaryConfigured() && parent?.id ? new SupabaseRepository(fetchImpl) : null;
+    if (repo && parent?.id) {
+      await repo.markAssetsDeletePending(parent.id, [asset.internal_asset_id]);
+    }
+
+    const res = await n8nWebhookRequest<{
+      ok: true;
+      outcomes?: Array<{ internal_asset_id?: string; public_id?: string; result?: string; error?: string }>;
+    }>(
       cfg.workflows.contentPath,
       {
         action: 'DELETE_MEDIA',
         post_uuid: parent?.id ?? '',
         post_id: asset.post_id,
-        asset_ids: [internalAssetId],
+        asset_ids: [asset.internal_asset_id],
         assets: [
           {
+            asset_uuid: asset.id ?? '',
             internal_asset_id: asset.internal_asset_id,
             public_id: asset.cloudinary_public_id,
             resource_type: asset.resource_type,
+            delivery_type: asset.delivery_type,
           },
         ],
         confirm: true,
@@ -1481,17 +2015,36 @@ export async function deleteSingleMediaAsset(
       60_000,
       fetchImpl,
     );
-    if (isSupabasePrimaryConfigured() && parent?.id) {
-      await new SupabaseRepository(fetchImpl).markAssetsDeleted(parent.id, [internalAssetId]);
+
+    const { confirmedIds, failedList } = classifyDeletionOutcomesStrict([asset], res.outcomes);
+    if (repo && parent?.id) {
+      await repo.finalizeDeletionCheckpoint({
+        postUuid: parent.id,
+        operation: 'DELETE_MEDIA',
+        confirmedAssetIds: confirmedIds,
+        failedAssets: failedList,
+        reason: input.reason,
+        jobId,
+        lockKey,
+        lockOwner: ownerId,
+      });
       void flushSyncQueueToSheets(fetchImpl).catch(() => undefined);
     }
-    return { internal_asset_id: internalAssetId, storage_status: 'DELETED' };
+
+    if (failedList.length > 0 || !confirmedIds.includes(asset.internal_asset_id)) {
+      throw new AppError(
+        'CLOUDINARY_DELETE_FAILED',
+        failedList[0]?.error || `Cloudinary did not confirm deletion of ${asset.internal_asset_id}.`,
+        { httpStatus: 502 },
+      );
+    }
+    return { internal_asset_id: asset.internal_asset_id, storage_status: 'DELETED' };
   } finally {
-    await lockStore.releaseLock(`post:${asset.post_id}`, ownerId);
+    await lockStore.releaseLock(lockKey, ownerId);
   }
 }
 
-/** Option B: Soft-delete the Supabase/Sheets post record (with optional Cloudinary asset removal). */
+/** Option B: Soft-delete the Supabase/Sheets post record ONLY after every active Cloudinary asset deletion is verified. */
 export async function deletePostAndMedia(
   postId: string,
   input: DeleteConfirmInput,
@@ -1500,7 +2053,7 @@ export async function deletePostAndMedia(
   const cfg = getConfig();
   const hasDurableCoord =
     (cfg.atomicLockProvider === 'supabase' && Boolean(cfg.supabaseUrl && cfg.supabaseServiceRoleKey)) ||
-    Boolean(cfg.databaseUrl);
+    (cfg.atomicLockProvider === 'postgres' && Boolean(cfg.databaseUrl));
   if (!input.confirm) throw new AppError('UNAUTHORIZED_CONTENT', 'Confirmation required.', { httpStatus: 403 });
   if (!cfg.demoMode && (!cfg.flags.liveDeleteEnabled || !hasDurableCoord)) {
     throw new AppError(
@@ -1510,24 +2063,42 @@ export async function deletePostAndMedia(
     );
   }
 
+  const { post, assets } = await loadAuthoritativeDeletionState(postId, fetchImpl);
+  assertPostDeletable(post, assets);
+
+  if (isSupabasePrimaryConfigured() && post.id) {
+    const unresolvedPublish = await new SupabaseRepository(fetchImpl).hasUnresolvedPublishAttempt(post.id);
+    if (unresolvedPublish) {
+      throw new AppError('POST_LOCKED', `Cannot delete post ${post.post_id} while publish job is active or unresolved.`, {
+        httpStatus: 409,
+      });
+    }
+  }
+
   const lockStore = getLockStore();
   const requestId = crypto.randomUUID();
+  const jobId = `job_${crypto.randomUUID().slice(0, 12)}`;
   const ownerId = `delpost:${requestId}`;
+  const lockKey = canonicalPostLockKey(post);
+
   await lockStore.acquireLock({
-    lock_key: `post:${postId}`,
-    post_id: postId,
+    lock_key: lockKey,
+    post_uuid: post.id,
+    post_id: post.post_id,
     operation: 'DELETE_POST',
     owner_id: ownerId,
     request_id: requestId,
     leaseSeconds: 300,
   });
 
-  try {
-    const ov = await getOverviewData(fetchImpl);
-    const post = ov.posts.find((p) => p.post_id === postId || p.id === postId);
-    if (!post) throw new AppError('POST_NOT_FOUND', `Post ${postId} not found.`, { httpStatus: 404 });
-    assertPostDeletable(post, ov.assets);
+  await lockStore.saveJob({
+    ...createJobRecord({ job_id: jobId, request_id: requestId, post_id: post.post_id, operation: 'DELETE_POST', stage: 'DELETING_ASSETS' }),
+    lock_key: lockKey,
+    lock_owner: ownerId,
+    status: 'RUNNING',
+  });
 
+  try {
     if (cfg.demoMode) {
       const demo = getDemoState();
       const now = new Date().toISOString();
@@ -1549,25 +2120,59 @@ export async function deletePostAndMedia(
             }
           : p,
       );
+      await lockStore.saveJob({
+        ...createJobRecord({ job_id: jobId, request_id: requestId, post_id: post.post_id, operation: 'DELETE_POST', stage: 'COMPLETED' }),
+        status: 'COMPLETED',
+        finished_at: now,
+      });
       return { post_id: post.post_id, status: 'DELETED' };
     }
 
     if (isSupabasePrimaryConfigured() && post.id) {
-      const activeAssets = ov.assets.filter(
-        (a) => a.post_id === post.post_id && a.storage_status === 'ACTIVE' && Boolean(a.cloudinary_public_id),
+      const repo = new SupabaseRepository(fetchImpl);
+      const targetAssets = assets.filter(
+        (a) =>
+          a.post_id === post.post_id &&
+          ['ACTIVE', 'DELETE_PENDING', 'PARTIAL_DELETE'].includes(a.storage_status) &&
+          Boolean(a.cloudinary_public_id),
       );
-      if (activeAssets.length > 0 && cfg.n8nWebhookSecret) {
-        await n8nWebhookRequest(
+      for (const a of targetAssets) {
+        assertDeletableAssetOwnership(a, post);
+      }
+
+      let confirmedIds: string[] = [];
+      let failedList: Array<{ internal_asset_id: string; error: string }> = [];
+
+      if (targetAssets.length > 0) {
+        if (!cfg.n8nWebhookSecret) {
+          throw new AppError(
+            'CONFIGURATION_ERROR',
+            'N8N_WEBHOOK_SECRET is required to verify Cloudinary asset deletion before soft-deleting the post.',
+            { httpStatus: 500 },
+          );
+        }
+
+        await repo.markAssetsDeletePending(
+          post.id,
+          targetAssets.map((a) => a.internal_asset_id),
+        );
+
+        const delRes = await n8nWebhookRequest<{
+          ok?: boolean;
+          outcomes?: Array<{ internal_asset_id?: string; public_id?: string; result?: string; error?: string }>;
+        }>(
           cfg.workflows.contentPath,
           {
             action: 'DELETE_MEDIA',
             post_uuid: post.id,
             post_id: post.post_id,
-            asset_ids: activeAssets.map((a) => a.internal_asset_id),
-            assets: activeAssets.map((a) => ({
+            asset_ids: targetAssets.map((a) => a.internal_asset_id),
+            assets: targetAssets.map((a) => ({
+              asset_uuid: a.id ?? '',
               internal_asset_id: a.internal_asset_id,
               public_id: a.cloudinary_public_id,
               resource_type: a.resource_type,
+              delivery_type: a.delivery_type,
             })),
             confirm: true,
             request_id: requestId,
@@ -1575,13 +2180,42 @@ export async function deletePostAndMedia(
           60_000,
           fetchImpl,
         );
+
+        ({ confirmedIds, failedList } = classifyDeletionOutcomesStrict(targetAssets, delRes.outcomes));
       }
-      const repo = new SupabaseRepository(fetchImpl);
-      if (activeAssets.length > 0) {
-        await repo.markAssetsDeleted(post.id, activeAssets.map((a) => a.internal_asset_id));
+
+      try {
+        await repo.finalizeDeletionCheckpoint({
+          postUuid: post.id,
+          operation: failedList.length === 0 ? 'DELETE_POST' : 'DELETE_MEDIA',
+          confirmedAssetIds: confirmedIds,
+          failedAssets: failedList,
+          reason: input.reason ?? '',
+          jobId,
+          lockKey,
+          lockOwner: ownerId,
+        });
+        void flushSyncQueueToSheets(fetchImpl).catch(() => undefined);
+      } catch (dbErr) {
+        await lockStore.saveJob({
+          ...createJobRecord({ job_id: jobId, request_id: requestId, post_id: post.post_id, operation: 'DELETE_POST', stage: 'OUTCOME_UNKNOWN' }),
+          lock_key: lockKey,
+          lock_owner: ownerId,
+          status: 'OUTCOME_UNKNOWN',
+          error_code: 'DELETE_OUTCOME_UNKNOWN',
+          error_message: `Cloudinary deleted (${confirmedIds.join(',')}) but Supabase finalization failed: ${dbErr instanceof Error ? dbErr.message : String(dbErr)}`,
+        });
+        throw dbErr;
       }
-      await repo.softDeletePost(post.id, input.reason ?? '');
-      void flushSyncQueueToSheets(fetchImpl).catch(() => undefined);
+
+      if (failedList.length > 0) {
+        throw new AppError(
+          'CLOUDINARY_DELETE_FAILED',
+          `Parent post NOT deleted because ${failedList.length} Cloudinary asset deletion(s) failed (${confirmedIds.length} confirmed deleted checkpointed).`,
+          { httpStatus: 502, details: { confirmedIds, failed: failedList } },
+        );
+      }
+
       return { post_id: post.post_id, status: 'DELETED' };
     }
 
@@ -1593,7 +2227,7 @@ export async function deletePostAndMedia(
     );
     return { post_id: post.post_id, status: 'DELETED' };
   } finally {
-    await lockStore.releaseLock(`post:${postId}`, ownerId);
+    await lockStore.releaseLock(lockKey, ownerId);
   }
 }
 
@@ -1699,22 +2333,82 @@ export async function retryOrReconcilePost(
 
   if (isSupabasePrimaryConfigured() && post.id) {
     const resolution = input.resolution ?? 'MARK_READY';
-    const nextStatus =
-      resolution === 'MARK_PUBLISHED'
-        ? 'PUBLISHED'
-        : resolution === 'MARK_FAILED'
-          ? 'FAILED'
-          : 'READY';
     const repo = new SupabaseRepository(fetchImpl);
+
+    // Live provider verification is REQUIRED before marking any post PUBLISHED or resolving uncertain executions.
+    if (resolution === 'MARK_PUBLISHED' || resolution === 'CHECK_EXECUTION') {
+      if (!cfg.workflows.recoveryPath || !cfg.n8nWebhookSecret) {
+        throw new AppError(
+          'CONFIGURATION_ERROR',
+          'Live Instagram Graph API verification via W05 (N8N_RECOVERY_PATH + N8N_WEBHOOK_SECRET) is required before reconciling publication state.',
+          { httpStatus: 409 },
+        );
+      }
+      const verifiedRes = await n8nWebhookRequest<{
+        ok?: boolean;
+        verified?: boolean;
+        status?: string;
+        published_id?: string;
+        published_url?: string;
+        error?: string;
+      }>(
+        cfg.workflows.recoveryPath,
+        {
+          action: 'VERIFY_PUBLICATION',
+          post_uuid: post.id,
+          post_id: post.post_id,
+          container_id: post.container_id,
+          execution_id: post.execution_id,
+          ig_user_id: post.ig_user_id || cfg.instagramUserId,
+          resolution,
+          published_id: input.published_id ?? '',
+          published_url: input.published_url ?? '',
+          request_id: crypto.randomUUID(),
+        },
+        35_000,
+        fetchImpl,
+      );
+
+      if (resolution === 'MARK_PUBLISHED' && (!verifiedRes.verified || verifiedRes.status !== 'PUBLISHED' || !verifiedRes.published_id)) {
+        throw new AppError(
+          'PUBLISH_OUTCOME_UNKNOWN',
+          verifiedRes.error || 'Meta Graph API did not verify this media ID/container as published; post cannot be marked PUBLISHED.',
+          { httpStatus: 422 },
+        );
+      }
+
+      const verifiedStatus = (verifiedRes.status as ContentRecord['status']) || (resolution === 'MARK_PUBLISHED' ? 'PUBLISHED' : post.status);
+      const updated = await repo.updatePost(
+        {
+          ...post,
+          status: verifiedStatus,
+          published_id: verifiedRes.published_id ?? post.published_id,
+          published_url: verifiedRes.published_url ?? post.published_url,
+          published_at: verifiedStatus === 'PUBLISHED' ? post.published_at || new Date().toISOString() : post.published_at,
+          error: verifiedStatus === 'READY' || verifiedStatus === 'PUBLISHED' ? '' : post.error,
+          error_code: verifiedStatus === 'READY' || verifiedStatus === 'PUBLISHED' ? '' : post.error_code,
+        },
+        'RECONCILE',
+      );
+      if (verifiedStatus === 'PUBLISHED' || verifiedStatus === 'FAILED' || verifiedStatus === 'READY') {
+        const activeLocks = await lockStore.listActiveLocks().catch(() => []);
+        for (const lk of activeLocks) {
+          if (lk.lock_key === canonicalPostLockKey(post) || lk.post_id === post.post_id) {
+            await lockStore.releaseLock(lk.lock_key, lk.owner_id).catch(() => undefined);
+          }
+        }
+      }
+      void flushSyncQueueToSheets(fetchImpl).catch(() => undefined);
+      return { ok: true, verified: Boolean(verifiedRes.verified), post_id: post.post_id, status: updated.status, published_id: updated.published_id };
+    }
+
+    const nextStatus = resolution === 'MARK_FAILED' ? 'FAILED' : 'READY';
     const updated = await repo.updatePost(
       {
         ...post,
         status: nextStatus,
-        published_id: input.published_id ?? post.published_id,
-        published_url: input.published_url ?? post.published_url,
-        published_at: nextStatus === 'PUBLISHED' ? post.published_at || new Date().toISOString() : post.published_at,
-        error: nextStatus === 'READY' || nextStatus === 'PUBLISHED' ? '' : post.error,
-        error_code: nextStatus === 'READY' || nextStatus === 'PUBLISHED' ? '' : post.error_code,
+        error: nextStatus === 'READY' ? '' : post.error,
+        error_code: nextStatus === 'READY' ? '' : post.error_code,
       },
       'RECONCILE',
     );
@@ -1726,7 +2420,11 @@ export async function retryOrReconcilePost(
     cfg.workflows.recoveryPath,
     {
       action: 'VERIFY_PUBLICATION',
-      post_id: postId,
+      post_uuid: post.id ?? '',
+      post_id: post.post_id,
+      container_id: post.container_id,
+      execution_id: post.execution_id,
+      ig_user_id: post.ig_user_id || cfg.instagramUserId,
       resolution: input.resolution ?? 'CHECK_EXECUTION',
       published_id: input.published_id ?? '',
       published_url: input.published_url ?? '',

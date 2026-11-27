@@ -23,9 +23,9 @@
       "name": "CODE | Verify Auth & Approval Gate",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [360, 300],
+      "position": [380, 300],
       "parameters": {
-        "jsCode": "// Safeguard marker: INSTAOPS_V2_PUBLISH — Meta Graph API v22.0 for Reels, Images, and 2-10 Mixed Carousels.\nconst item = $input.first().json || {};\nconst headers = item.headers || {};\nconst body = item.body || item;\nconst expected = String($env.N8N_WEBHOOK_SECRET || '');\nconst provided = String(headers['x-dashboard-secret'] || headers['X-Dashboard-Secret'] || '');\n\nfunction safeEqual(a, b) {\n  if (!a || a.length !== b.length) return false;\n  let diff = 0;\n  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);\n  return diff === 0;\n}\n\nconst postUuid = String(body.post_uuid || '').trim();\nconst postId = String(body.post_id || '').trim();\nconst igUserId = String(body.ig_user_id || $env.INSTAGRAM_USER_ID || '17841453414532595').trim();\nconst reviewedRevision = String(body.reviewed_revision || '').trim();\nconst mediaType = String(body.media_type || 'REEL').toUpperCase();\nconst mediaItems = Array.isArray(body.media_items) ? body.media_items : [];\n\nlet error = '';\nif (!expected || !safeEqual(provided, expected)) {\n  error = 'Unauthorized webhook secret.';\n} else if (body.confirm !== true || !postId || !reviewedRevision) {\n  error = 'Explicit confirmation and reviewed_revision are required.';\n} else if (mediaType === 'CAROUSEL' && (mediaItems.length < 2 || mediaItems.length > 10)) {\n  error = `Carousel publishing requires 2-10 active assets (received ${mediaItems.length}).`;\n}\n\nreturn [{\n  json: {\n    valid: !error,\n    error,\n    httpStatus: error.includes('Unauthorized') ? 403 : error ? 422 : 202,\n    post_uuid: postUuid,\n    post_id: postId,\n    ig_user_id: igUserId,\n    reviewed_revision: reviewedRevision,\n    media_type: mediaType,\n    media_url: String(body.media_url || ''),\n    media_items: mediaItems,\n    caption: String(body.caption || ''),\n    request_id: String(body.request_id || ''),\n    job_id: String(body.job_id || ''),\n    execution_id: String($execution.id || '')\n  }\n}];"
+        "jsCode": "// Safeguard marker: INSTAOPS_V2_PUBLISH — Meta Graph API v22.0 for Reels, Images, and 2-10 Mixed Carousels.\nfunction readCfg(key, fallback) {\n  var blocked = false;\n  try {\n    if (typeof $env !== 'undefined' && $env && $env[key] !== undefined && $env[key] !== null && $env[key] !== '') {\n      return { value: String($env[key]), source: 'env', blocked: false };\n    }\n  } catch (_) { blocked = true; }\n  try {\n    if (typeof $vars !== 'undefined' && $vars && $vars[key] !== undefined && $vars[key] !== null && $vars[key] !== '') {\n      return { value: String($vars[key]), source: 'vars', blocked: blocked };\n    }\n  } catch (_) {}\n  return { value: fallback || '', source: fallback ? 'default' : 'missing', blocked: blocked };\n}\n\nfunction safeEqual(a, b) {\n  if (!a || a.length !== b.length) return false;\n  var diff = 0;\n  for (var i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);\n  return diff === 0;\n}\n\nvar item = $input.first().json || {};\nvar headers = item.headers || {};\nvar body = item.body || item;\nvar secretCfg = readCfg('N8N_WEBHOOK_SECRET', '');\nvar livePubCfg = readCfg('LIVE_PUBLISH_ENABLED', 'false');\nvar expected = secretCfg.value;\nvar provided = String(headers['x-dashboard-secret'] || headers['X-Dashboard-Secret'] || '');\n\nvar postUuid = String(body.post_uuid || '').trim();\nvar postId = String(body.post_id || '').trim();\nvar reviewedRevision = String(body.reviewed_revision || '').trim();\nvar approvedRevision = String(body.approved_revision || '').trim();\nvar uuidOk = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(postUuid);\nvar livePubEnabled = livePubCfg.value.toLowerCase() === 'true';\n\nvar error = '';\nvar httpStatus = 202;\nif (secretCfg.blocked && !expected) {\n  error = 'n8n $env/secret access denied; configure N8N_BLOCK_ENV_ACCESS_IN_NODE=false or $vars.';\n  httpStatus = 500;\n} else if (!expected || !safeEqual(provided, expected)) {\n  error = 'Unauthorized webhook secret.';\n  httpStatus = 403;\n} else if (livePubCfg.blocked && livePubCfg.source === 'missing') {\n  error = 'n8n $env access denied for LIVE_PUBLISH_ENABLED flag.';\n  httpStatus = 500;\n} else if (!livePubEnabled) {\n  error = 'Live publishing blocked inside W02: LIVE_PUBLISH_ENABLED is not true.';\n  httpStatus = 409;\n} else if (body.confirm !== true || !uuidOk || !postId || !reviewedRevision) {\n  error = 'Explicit confirm: true, valid post_uuid, post_id, and reviewed_revision are required.';\n  httpStatus = 422;\n} else if (approvedRevision && approvedRevision !== reviewedRevision) {\n  error = 'Approval revision mismatch in publish request.';\n  httpStatus = 409;\n}\n\nreturn [{\n  json: {\n    valid: !error,\n    error: error,\n    httpStatus: httpStatus,\n    post_uuid: postUuid,\n    post_id: postId,\n    ig_user_id: String(body.ig_user_id || readCfg('INSTAGRAM_USER_ID', '17841453414532595').value).trim(),\n    reviewed_revision: reviewedRevision,\n    approved_revision: approvedRevision || reviewedRevision,\n    request_id: String(body.request_id || ''),\n    job_id: String(body.job_id || ''),\n    lock_key: String(body.lock_key || ('post:' + postUuid)),\n    lock_owner: String(body.lock_owner || ''),\n    execution_id: String((typeof $execution !== 'undefined' && $execution && $execution.id) || ''),\n    started_at: new Date().toISOString(),\n    _untrusted_request_media_ignored: true\n  }\n}];"
       }
     },
     {
@@ -33,7 +33,7 @@
       "name": "IF | Passed Request Guard",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [580, 300],
+      "position": [620, 300],
       "parameters": {
         "conditions": {
           "boolean": [{ "value1": "={{ $json.valid }}", "value2": true }]
@@ -45,7 +45,7 @@
       "name": "RESPOND | Reject 4xx",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [800, 440],
+      "position": [860, 440],
       "parameters": {
         "respondWith": "json",
         "responseBody": "={{ JSON.stringify({ ok: false, error: $json.error }) }}",
@@ -57,428 +57,39 @@
       "name": "RESPOND | Accepted 202",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [800, 200],
+      "position": [860, 180],
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ JSON.stringify({ accepted: true, execution_id: $json.execution_id, post_uuid: $json.post_uuid, post_id: $json.post_id, job_id: $json.job_id, request_id: $json.request_id }) }}",
+        "responseBody": "={{ JSON.stringify({ accepted: true, execution_id: $json.execution_id, post_uuid: $json.post_uuid, post_id: $json.post_id, job_id: $json.job_id, request_id: $json.request_id, lock_key: $json.lock_key }) }}",
         "options": { "responseCode": 202 }
       }
     },
     {
-      "id": "w02-sb-fetch",
-      "name": "SUPABASE | Read Authoritative Post & Assets",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [1020, 200],
-      "parameters": {
-        "method": "GET",
-        "url": "={{ ($env.SUPABASE_URL || 'https://cdgwdlhesgcxmswsamrj.supabase.co').replace(/\\/$/, '') + '/rest/v1/instaops_posts?post_id=eq.' + encodeURIComponent($json.post_id) + '&select=*,instaops_media_assets(*)' }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY || '' }}" },
-            { "name": "Authorization", "value": "={{ 'Bearer ' + ($env.SUPABASE_SERVICE_ROLE_KEY || '') }}" }
-          ]
-        },
-        "options": { "timeout": 15000 }
-      }
-    },
-    {
-      "id": "w02-verify-db",
-      "name": "CODE | Re-verify Approved Revision & Build Container Requests",
+      "id": "w02-orchestrator",
+      "name": "CODE | Authoritative Gate, Carousel & Bounded Meta Publish",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1240, 200],
+      "position": [1140, 180],
       "parameters": {
-        "jsCode": "const req = $('CODE | Verify Auth & Approval Gate').item.json;\nconst rows = $input.all().map(i => i.json);\nconst row = Array.isArray(rows[0]) ? rows[0][0] : rows[0];\nif (!row || !row.id) {\n  return [{ json: { canProceed: false, reason: 'Post missing in Supabase.' } }];\n}\nconst revision = String(row.revision || '');\nconst approved_revision = String(row.approved_revision ?? '');\nconst status = String(row.status || '').toUpperCase();\nconst mediaType = String(row.media_type || req.media_type).toUpperCase();\nif (status === 'PUBLISHED' || Boolean(row.published_id)) {\n  return [{ json: { canProceed: false, reason: 'Duplicate protection: already published.' } }];\n}\nif (revision !== req.reviewed_revision && approved_revision !== revision) {\n  return [{ json: { canProceed: false, reason: `Revision mismatch (reviewed=${req.reviewed_revision}, revision=${revision}).` } }];\n}\nconst activeAssets = (Array.isArray(row.instaops_media_assets) ? row.instaops_media_assets : req.media_items)\n  .filter(a => !a.storage_status || a.storage_status === 'ACTIVE')\n  .sort((a, b) => Number(a.media_index || 0) - Number(b.media_index || 0));\n\nif (mediaType === 'CAROUSEL' && (activeAssets.length < 2 || activeAssets.length > 10)) {\n  return [{ json: { canProceed: false, reason: 'Carousel requires 2-10 ACTIVE assets.' } }];\n}\n\nreturn [{\n  json: {\n    canProceed: true,\n    post_uuid: row.id,\n    post_id: row.post_id,\n    ig_user_id: req.ig_user_id,\n    media_type: mediaType,\n    isCarousel: mediaType === 'CAROUSEL',\n    caption: String(row.caption || row.original_caption || req.caption || ''),\n    media_url: String(row.media_url || (activeAssets[0] && activeAssets[0].secure_url) || req.media_url),\n    approved_revision: Number(req.reviewed_revision) || 1,\n    assets: activeAssets,\n    execution_id: req.execution_id,\n    request_id: req.request_id\n  }\n}];"
-      }
-    },
-    {
-      "id": "w02-if-db-ok",
-      "name": "IF | DB Approval Verified",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2,
-      "position": [1460, 200],
-      "parameters": {
-        "conditions": {
-          "boolean": [{ "value1": "={{ $json.canProceed }}", "value2": true }]
-        }
-      }
-    },
-    {
-      "id": "w02-sb-publishing",
-      "name": "SUPABASE | Mark PUBLISHING Checkpoint",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [1680, 140],
-      "parameters": {
-        "method": "PATCH",
-        "url": "={{ ($env.SUPABASE_URL || 'https://cdgwdlhesgcxmswsamrj.supabase.co').replace(/\\/$/, '') + '/rest/v1/instaops_posts?id=eq.' + $json.post_uuid }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY || '' }}" },
-            { "name": "Authorization", "value": "={{ 'Bearer ' + ($env.SUPABASE_SERVICE_ROLE_KEY || '') }}" }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ status: 'PUBLISHING', approved_revision: $json.approved_revision, execution_id: $json.execution_id, request_id: $json.request_id }) }}",
-        "options": { "timeout": 15000 }
-      }
-    },
-    {
-      "id": "w02-if-carousel",
-      "name": "IF | Is Multi-Item Carousel",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2,
-      "position": [1900, 140],
-      "parameters": {
-        "conditions": {
-          "boolean": [
-            { "value1": "={{ $('CODE | Re-verify Approved Revision & Build Container Requests').item.json.isCarousel }}", "value2": true }
-          ]
-        }
-      }
-    },
-    {
-      "id": "w02-split-children",
-      "name": "CODE | Expand Carousel Child Items",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [2120, 40],
-      "parameters": {
-        "jsCode": "const ctx = $('CODE | Re-verify Approved Revision & Build Container Requests').item.json;\nreturn ctx.assets.map((a, idx) => ({\n  json: {\n    post_uuid: ctx.post_uuid,\n    ig_user_id: ctx.ig_user_id,\n    media_index: idx,\n    asset_id: a.id || null,\n    isVideo: String(a.resource_type || a.media_type).toLowerCase() === 'video',\n    secure_url: String(a.secure_url)\n  }\n}));"
-      }
-    },
-    {
-      "id": "w02-create-child-containers",
-      "name": "HTTP | Meta Graph Create Carousel Child Container",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "continueOnFail": true,
-      "position": [2340, 40],
-      "parameters": {
-        "method": "POST",
-        "url": "={{ 'https://graph.facebook.com/' + ($env.INSTAGRAM_GRAPH_VERSION || 'v22.0') + '/' + $json.ig_user_id + '/media' }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [{ "name": "Authorization", "value": "={{ 'Bearer ' + ($env.META_GRAPH_TOKEN || '') }}" }]
-        },
-        "sendBody": true,
-        "contentType": "form-urlencoded",
-        "bodyParameters": {
-          "parameters": [
-            { "name": "is_carousel_item", "value": "true" },
-            { "name": "media_type", "value": "={{ $json.isVideo ? 'VIDEO' : '' }}" },
-            { "name": "video_url", "value": "={{ $json.isVideo ? $json.secure_url : '' }}" },
-            { "name": "image_url", "value": "={{ $json.isVideo ? '' : $json.secure_url }}" }
-          ]
-        },
-        "options": { "timeout": 45000 }
-      }
-    },
-    {
-      "id": "w02-collect-children",
-      "name": "CODE | Gather Child Container IDs",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [2560, 40],
-      "parameters": {
-        "jsCode": "const ctx = $('CODE | Re-verify Approved Revision & Build Container Requests').item.json;\nconst childIds = $input.all().map(i => String((i.json && i.json.id) || '')).filter(Boolean);\nreturn [{\n  json: {\n    post_uuid: ctx.post_uuid,\n    ig_user_id: ctx.ig_user_id,\n    caption: ctx.caption,\n    childIds,\n    childrenCsv: childIds.join(',')\n  }\n}];"
-      }
-    },
-    {
-      "id": "w02-wait-children",
-      "name": "WAIT | Carousel Children Ready",
-      "type": "n8n-nodes-base.wait",
-      "typeVersion": 1.1,
-      "position": [2780, 40],
-      "parameters": { "amount": 10, "unit": "seconds" }
-    },
-    {
-      "id": "w02-create-parent-carousel",
-      "name": "HTTP | Meta Graph Create Parent CAROUSEL Container",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "continueOnFail": true,
-      "position": [3000, 40],
-      "parameters": {
-        "method": "POST",
-        "url": "={{ 'https://graph.facebook.com/' + ($env.INSTAGRAM_GRAPH_VERSION || 'v22.0') + '/' + $json.ig_user_id + '/media' }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [{ "name": "Authorization", "value": "={{ 'Bearer ' + ($env.META_GRAPH_TOKEN || '') }}" }]
-        },
-        "sendBody": true,
-        "contentType": "form-urlencoded",
-        "bodyParameters": {
-          "parameters": [
-            { "name": "media_type", "value": "CAROUSEL" },
-            { "name": "children", "value": "={{ $json.childrenCsv }}" },
-            { "name": "caption", "value": "={{ $json.caption }}" }
-          ]
-        },
-        "options": { "timeout": 45000 }
-      }
-    },
-    {
-      "id": "w02-ig-create-single",
-      "name": "HTTP | Meta Graph Create Single Media Container",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "continueOnFail": true,
-      "position": [2120, 240],
-      "parameters": {
-        "method": "POST",
-        "url": "={{ 'https://graph.facebook.com/' + ($env.INSTAGRAM_GRAPH_VERSION || 'v22.0') + '/' + $('CODE | Re-verify Approved Revision & Build Container Requests').item.json.ig_user_id + '/media' }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [{ "name": "Authorization", "value": "={{ 'Bearer ' + ($env.META_GRAPH_TOKEN || '') }}" }]
-        },
-        "sendBody": true,
-        "contentType": "form-urlencoded",
-        "bodyParameters": {
-          "parameters": [
-            { "name": "media_type", "value": "={{ $('CODE | Re-verify Approved Revision & Build Container Requests').item.json.media_type === 'REEL' ? 'REELS' : '' }}" },
-            { "name": "video_url", "value": "={{ $('CODE | Re-verify Approved Revision & Build Container Requests').item.json.media_type === 'REEL' ? $('CODE | Re-verify Approved Revision & Build Container Requests').item.json.media_url : '' }}" },
-            { "name": "image_url", "value": "={{ $('CODE | Re-verify Approved Revision & Build Container Requests').item.json.media_type === 'IMAGE' ? $('CODE | Re-verify Approved Revision & Build Container Requests').item.json.media_url : '' }}" },
-            { "name": "caption", "value": "={{ $('CODE | Re-verify Approved Revision & Build Container Requests').item.json.caption }}" }
-          ]
-        },
-        "options": { "timeout": 45000 }
-      }
-    },
-    {
-      "id": "w02-unify-container",
-      "name": "CODE | Unify Container ID",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [3110, 140],
-      "parameters": {
-        "jsCode": "const res = $input.first().json || {};\nconst ctx = $('CODE | Re-verify Approved Revision & Build Container Requests').item.json;\nreturn [{ json: { container_id: String(res.id || ''), post_uuid: ctx.post_uuid, ig_user_id: ctx.ig_user_id } }];"
-      }
-    },
-    {
-      "id": "w02-sb-save-container",
-      "name": "SUPABASE | Save Container Checkpoint",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [3240, 140],
-      "parameters": {
-        "method": "PATCH",
-        "url": "={{ ($env.SUPABASE_URL || 'https://cdgwdlhesgcxmswsamrj.supabase.co').replace(/\\/$/, '') + '/rest/v1/instaops_posts?id=eq.' + $json.post_uuid }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY || '' }}" },
-            { "name": "Authorization", "value": "={{ 'Bearer ' + ($env.SUPABASE_SERVICE_ROLE_KEY || '') }}" }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ container_id: $json.container_id }) }}",
-        "options": { "timeout": 15000 }
-      }
-    },
-    {
-      "id": "w02-wait-parent",
-      "name": "WAIT | Poll Container Delay",
-      "type": "n8n-nodes-base.wait",
-      "typeVersion": 1.1,
-      "position": [3440, 140],
-      "parameters": { "amount": 8, "unit": "seconds" }
-    },
-    {
-      "id": "w02-poll-status",
-      "name": "HTTP | Meta Graph Poll status_code",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "continueOnFail": true,
-      "position": [3660, 140],
-      "parameters": {
-        "method": "GET",
-        "url": "={{ 'https://graph.facebook.com/' + ($env.INSTAGRAM_GRAPH_VERSION || 'v22.0') + '/' + $('CODE | Unify Container ID').item.json.container_id + '?fields=status_code,status' }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [{ "name": "Authorization", "value": "={{ 'Bearer ' + ($env.META_GRAPH_TOKEN || '') }}" }]
-        },
-        "options": { "timeout": 20000 }
-      }
-    },
-    {
-      "id": "w02-eval-poll",
-      "name": "CODE | Evaluate Container Status",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [3880, 140],
-      "parameters": {
-        "jsCode": "const res = $input.first().json || {};\nconst code = String(res.status_code || res.status || '').toUpperCase();\nconst ready = code === 'FINISHED' || code === 'PUBLISHED';\nconst meta = $('CODE | Unify Container ID').item.json;\nreturn [{ json: { status_code: code, ready, container_id: meta.container_id, ig_user_id: meta.ig_user_id } }];"
-      }
-    },
-    {
-      "id": "w02-if-ready",
-      "name": "IF | Container FINISHED",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2,
-      "position": [4100, 140],
-      "parameters": {
-        "conditions": {
-          "boolean": [{ "value1": "={{ $json.ready }}", "value2": true }]
-        }
-      }
-    },
-    {
-      "id": "w02-ig-publish",
-      "name": "HTTP | Meta Graph media_publish",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "continueOnFail": true,
-      "position": [4320, 60],
-      "parameters": {
-        "method": "POST",
-        "url": "={{ 'https://graph.facebook.com/' + ($env.INSTAGRAM_GRAPH_VERSION || 'v22.0') + '/' + $json.ig_user_id + '/media_publish' }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [{ "name": "Authorization", "value": "={{ 'Bearer ' + ($env.META_GRAPH_TOKEN || '') }}" }]
-        },
-        "sendBody": true,
-        "contentType": "form-urlencoded",
-        "bodyParameters": {
-          "parameters": [{ "name": "creation_id", "value": "={{ $json.container_id }}" }]
-        },
-        "options": { "timeout": 45000 }
-      }
-    },
-    {
-      "id": "w02-fetch-permalink",
-      "name": "HTTP | Fetch Published Permalink",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "continueOnFail": true,
-      "position": [4540, 60],
-      "parameters": {
-        "method": "GET",
-        "url": "={{ 'https://graph.facebook.com/' + ($env.INSTAGRAM_GRAPH_VERSION || 'v22.0') + '/' + ($json.id || '0') + '?fields=permalink,timestamp,media_type' }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [{ "name": "Authorization", "value": "={{ 'Bearer ' + ($env.META_GRAPH_TOKEN || '') }}" }]
-        },
-        "options": { "timeout": 20000 }
-      }
-    },
-    {
-      "id": "w02-sb-save-pub",
-      "name": "SUPABASE | Save PUBLISHED State",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [4760, 60],
-      "parameters": {
-        "method": "PATCH",
-        "url": "={{ ($env.SUPABASE_URL || 'https://cdgwdlhesgcxmswsamrj.supabase.co').replace(/\\/$/, '') + '/rest/v1/instaops_posts?id=eq.' + $('CODE | Re-verify Approved Revision & Build Container Requests').item.json.post_uuid }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY || '' }}" },
-            { "name": "Authorization", "value": "={{ 'Bearer ' + ($env.SUPABASE_SERVICE_ROLE_KEY || '') }}" }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ status: $('HTTP | Meta Graph media_publish').item.json.id ? 'PUBLISHED' : 'VERIFY_MANUALLY', published_id: String($('HTTP | Meta Graph media_publish').item.json.id || ''), published_url: String($json.permalink || ''), published_at: $('HTTP | Meta Graph media_publish').item.json.id ? new Date().toISOString() : null, processed_at: new Date().toISOString(), sheets_sync_status: 'PENDING', error: $('HTTP | Meta Graph media_publish').item.json.id ? '' : 'Uncertain publish outcome — verify manually.', error_code: $('HTTP | Meta Graph media_publish').item.json.id ? '' : 'PUBLISH_OUTCOME_UNKNOWN' }) }}",
-        "options": { "timeout": 15000 }
-      }
-    },
-    {
-      "id": "w02-sheets-sync-pub",
-      "name": "SHEETS | Sync Published By Permanent ID",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
-      "continueOnFail": true,
-      "position": [4980, 60],
-      "credentials": {
-        "googleSheetsOAuth2Api": { "id": "CONFIGURE_IN_N8N", "name": "Google Sheets OAuth2" }
-      },
-      "parameters": {
-        "operation": "appendOrUpdate",
-        "documentId": { "mode": "id", "value": "={{ $env.GOOGLE_SHEET_ID || '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs' }}" },
-        "sheetName": { "mode": "name", "value": "Posts" },
-        "columns": {
-          "mappingMode": "defineBelow",
-          "value": {
-            "post_id": "={{ $('CODE | Re-verify Approved Revision & Build Container Requests').item.json.post_id }}",
-            "post_uuid": "={{ $('CODE | Re-verify Approved Revision & Build Container Requests').item.json.post_uuid }}",
-            "status": "={{ $('HTTP | Meta Graph media_publish').item.json.id ? 'PUBLISHED' : 'VERIFY_MANUALLY' }}",
-            "published_id": "={{ String($('HTTP | Meta Graph media_publish').item.json.id || '') }}",
-            "published_url": "={{ String($('HTTP | Fetch Published Permalink').item.json.permalink || '') }}",
-            "processed_at": "={{ new Date().toISOString() }}"
-          },
-          "matchingColumns": ["post_id"]
-        }
-      }
-    },
-    {
-      "id": "w02-sb-verify-manual",
-      "name": "SUPABASE | Mark VERIFY_MANUALLY on Timeout",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [4320, 260],
-      "parameters": {
-        "method": "PATCH",
-        "url": "={{ ($env.SUPABASE_URL || 'https://cdgwdlhesgcxmswsamrj.supabase.co').replace(/\\/$/, '') + '/rest/v1/instaops_posts?id=eq.' + $('CODE | Re-verify Approved Revision & Build Container Requests').item.json.post_uuid }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY || '' }}" },
-            { "name": "Authorization", "value": "={{ 'Bearer ' + ($env.SUPABASE_SERVICE_ROLE_KEY || '') }}" }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ status: 'VERIFY_MANUALLY', error: 'Container status_code was ' + $json.status_code, error_code: 'CONTAINER_TIMEOUT', error_stage: 'PROCESSING_CONTAINER' }) }}",
-        "options": { "timeout": 15000 }
+        "jsCode": "// Safeguard marker: INSTAOPS_V2_PUBLISH — Supabase authoritative assets, strict revision OR-check, bounded child & parent container polling, single media_publish + immediate published_id persistence.\nreturn (async function () {\n  var self = this;\n  function readCfg(key, fallback) {\n    var blocked = false;\n    try {\n      if (typeof $env !== 'undefined' && $env && $env[key] !== undefined && $env[key] !== null && $env[key] !== '') {\n        return { value: String($env[key]), source: 'env', blocked: false };\n      }\n    } catch (_) { blocked = true; }\n    try {\n      if (typeof $vars !== 'undefined' && $vars && $vars[key] !== undefined && $vars[key] !== null && $vars[key] !== '') {\n        return { value: String($vars[key]), source: 'vars', blocked: blocked };\n      }\n    } catch (_) {}\n    return { value: fallback || '', source: fallback ? 'default' : 'missing', blocked: blocked };\n  }\n\n  async function httpCall(opts) {\n    if (self && self.helpers && typeof self.helpers.httpRequest === 'function') {\n      return await self.helpers.httpRequest(opts);\n    }\n    if (typeof fetch === 'function') {\n      var headers = Object.assign({}, opts.headers || {});\n      var body;\n      if (opts.body !== undefined) {\n        if (typeof opts.body === 'string') {\n          body = opts.body;\n        } else {\n          headers['Content-Type'] = headers['Content-Type'] || 'application/json';\n          body = JSON.stringify(opts.body);\n        }\n      }\n      var res = await fetch(opts.url, { method: opts.method || 'GET', headers: headers, body: body });\n      var text = await res.text();\n      var parsed = text;\n      try { parsed = text ? JSON.parse(text) : {}; } catch (_) {}\n      return { statusCode: res.status, body: parsed, headers: {} };\n    }\n    throw new Error('No HTTP request helper available.');\n  }\n\n  async function sleepMs(ms) {\n    if (ms > 0 && typeof setTimeout === 'function') {\n      await new Promise(function (resolve) { setTimeout(resolve, ms); });\n    }\n  }\n\n  function safeSlug(v) {\n    return String(v || '').replace(/[^A-Za-z0-9_-]+/g, '_').slice(0, 40);\n  }\n\n  function isSafeHttpsUrl(raw) {\n    try {\n      var u = new URL(String(raw || '').trim());\n      return u.protocol === 'https:' && !/^(127\\.|10\\.|192\\.168\\.|169\\.254\\.)/.test(u.hostname);\n    } catch (_) { return false; }\n  }\n\n  var req = $('CODE | Verify Auth & Approval Gate').item.json;\n  var sbUrlCfg = readCfg('SUPABASE_URL', 'https://cdgwdlhesgcxmswsamrj.supabase.co');\n  var sbKeyCfg = readCfg('SUPABASE_SERVICE_ROLE_KEY', '');\n  var metaTokenCfg = readCfg('META_GRAPH_TOKEN', '');\n  var graphVerCfg = readCfg('INSTAGRAM_GRAPH_VERSION', 'v22.0');\n  var livePubCfg = readCfg('LIVE_PUBLISH_ENABLED', 'false');\n  var pollWaitMs = Math.max(0, Math.min(15000, Number(readCfg('N8N_GRAPH_POLL_INTERVAL_MS', '3000').value) || 3000));\n  var maxPolls = Math.max(1, Math.min(30, Number(readCfg('N8N_GRAPH_MAX_POLLS', '15').value) || 15));\n\n  if (livePubCfg.value.toLowerCase() !== 'true') {\n    return [{ json: { ok: false, status: 'REJECTED', error: 'LIVE_PUBLISH_ENABLED is false inside W02.' } }];\n  }\n  if (!sbKeyCfg.value || !metaTokenCfg.value) {\n    return [{ json: { ok: false, status: 'FAILED', error: (sbKeyCfg.blocked || metaTokenCfg.blocked) ? 'n8n $env/secret access denied; configure N8N_BLOCK_ENV_ACCESS_IN_NODE=false or $vars.' : 'Missing SUPABASE_SERVICE_ROLE_KEY or META_GRAPH_TOKEN.' } }];\n  }\n\n  var sbUrl = sbUrlCfg.value.replace(/\\/$/, '');\n  var sbKey = sbKeyCfg.value;\n  var metaToken = metaTokenCfg.value;\n  var graphVer = graphVerCfg.value || 'v22.0';\n  var sbHeaders = { apikey: sbKey, Authorization: 'Bearer ' + sbKey, 'Content-Type': 'application/json' };\n  var graphHeaders = { Authorization: 'Bearer ' + metaToken, 'Content-Type': 'application/json' };\n  var execStart = Date.now();\n\n  async function sbRpc(fnName, params) {\n    return await httpCall({ method: 'POST', url: sbUrl + '/rest/v1/rpc/' + fnName, headers: sbHeaders, body: params, json: true, returnFullResponse: true, ignoreHttpStatusErrors: true, timeout: 20000 });\n  }\n  async function sbRest(method, path, body) {\n    return await httpCall({ method: method, url: sbUrl + '/rest/v1/' + path, headers: sbHeaders, body: body, json: true, returnFullResponse: true, ignoreHttpStatusErrors: true, timeout: 20000 });\n  }\n  async function graphCall(method, path, body) {\n    return await httpCall({\n      method: method,\n      url: 'https://graph.facebook.com/' + graphVer + '/' + path,\n      headers: graphHeaders,\n      body: body,\n      json: true,\n      returnFullResponse: true,\n      ignoreHttpStatusErrors: true,\n      timeout: 30000\n    });\n  }\n\n  var workerOwner = 'w02:' + (req.execution_id || req.request_id || Date.now());\n  var lockRes = await sbRpc('instaops_transfer_or_claim_lock', {\n    p_lock_key: req.lock_key,\n    p_post_uuid: req.post_uuid,\n    p_post_id: req.post_id,\n    p_operation: 'PUBLISH',\n    p_expected_owner: req.lock_owner || '',\n    p_new_owner: workerOwner,\n    p_request_id: req.request_id,\n    p_lease_seconds: 600\n  });\n  var lockRows = Array.isArray(lockRes.body) ? lockRes.body : [lockRes.body];\n  var lockRow = lockRows[0] || {};\n  if (lockRes.statusCode >= 300 || lockRow.acquired !== true) {\n    if (req.job_id) {\n      await sbRest('PATCH', 'instaops_jobs?job_id=eq.' + encodeURIComponent(req.job_id), {\n        status: 'FAILED', stage: 'LOCK_CONFLICT', execution_id: req.execution_id,\n        error_code: 'POST_LOCKED', error_message: String(lockRow.reason || 'Publish lock conflict'), finished_at: new Date().toISOString()\n      });\n    }\n    return [{ json: { ok: false, status: 'LOCK_CONFLICT', error: String(lockRow.reason || 'Publish lock held by another worker') } }];\n  }\n\n  var currentRev = 0;\n  async function enqueueSync(entityType, entityUuid, extId, op, payload, srcRev) {\n    await sbRest('POST', 'instaops_sync_queue', {\n      entity_type: entityType,\n      entity_uuid: entityUuid,\n      external_id: extId,\n      operation: op,\n      payload: payload,\n      source_revision: srcRev || 0,\n      idempotency_key: entityType.toLowerCase() + ':' + entityUuid + ':' + Date.now() + ':' + Math.floor(Math.random() * 10000),\n      status: 'PENDING'\n    });\n  }\n\n  async function markUncertain(stage, msg, extraPostPatch) {\n    // CRITICAL: Preserve lock on uncertain publish outcome so manual reconciliation is enforced!\n    var nowIso = new Date().toISOString();\n    var patch = Object.assign({\n      status: 'VERIFY_MANUALLY',\n      error: String(msg || 'Publish outcome uncertain; verify manually on Instagram').slice(0, 500),\n      error_code: 'PUBLISH_OUTCOME_UNKNOWN',\n      error_stage: stage || 'PUBLISHING_MEDIA',\n      sheets_sync_status: 'PENDING'\n    }, extraPostPatch || {});\n    var pRes = await sbRest('PATCH', 'instaops_posts?id=eq.' + encodeURIComponent(req.post_uuid), patch);\n    if (req.job_id) {\n      await sbRest('PATCH', 'instaops_jobs?job_id=eq.' + encodeURIComponent(req.job_id), {\n        status: 'OUTCOME_UNKNOWN', stage: 'OUTCOME_UNKNOWN', execution_id: req.execution_id,\n        error_code: 'PUBLISH_OUTCOME_UNKNOWN', error_message: String(msg || '')\n      });\n    }\n    var savedRow = Array.isArray(pRes.body) && pRes.body[0] ? pRes.body[0] : Object.assign({ id: req.post_uuid, post_id: req.post_id }, patch);\n    await enqueueSync('POST', req.post_uuid, req.post_id, 'UPSERT', { post_uuid: req.post_uuid, row: savedRow }, currentRev);\n    await sbRest('POST', 'instaops_execution_logs', {\n      log_id: 'log_' + Date.now() + '_' + safeSlug(req.post_id), request_id: req.request_id, execution_id: req.execution_id,\n      workflow_id: 'w02-publish', workflow_name: 'W02 Publish Content', post_id: req.post_id, operation: 'PUBLISH', trigger_source: 'DASHBOARD',\n      stage: stage || 'OUTCOME_UNKNOWN', status: 'OUTCOME_UNKNOWN', started_at: req.started_at, finished_at: nowIso, duration_ms: Date.now() - execStart,\n      error_code: 'PUBLISH_OUTCOME_UNKNOWN', error_message: String(msg || ''), retryable: false\n    });\n    return [{ json: { ok: false, post_uuid: req.post_uuid, post_id: req.post_id, status: 'VERIFY_MANUALLY', error_code: 'PUBLISH_OUTCOME_UNKNOWN', error: msg, lock_preserved: true } }];\n  }\n\n  async function failConfirmedPrePublish(errCode, errStage, errMsg, shouldUpdatePost) {\n    var nowIso = new Date().toISOString();\n    if (shouldUpdatePost) {\n      var pRes = await sbRest('PATCH', 'instaops_posts?id=eq.' + encodeURIComponent(req.post_uuid), {\n        status: 'FAILED', error: String(errMsg || '').slice(0, 500), error_code: errCode, error_stage: errStage, sheets_sync_status: 'PENDING'\n      });\n      var savedRow = Array.isArray(pRes.body) && pRes.body[0] ? pRes.body[0] : { id: req.post_uuid, post_id: req.post_id, status: 'FAILED', error_code: errCode, error: errMsg };\n      await enqueueSync('POST', req.post_uuid, req.post_id, 'UPSERT', { post_uuid: req.post_uuid, row: savedRow }, currentRev);\n    }\n    if (req.job_id) {\n      await sbRest('PATCH', 'instaops_jobs?job_id=eq.' + encodeURIComponent(req.job_id), {\n        status: 'FAILED', stage: errStage || 'FAILED', execution_id: req.execution_id,\n        error_code: errCode, error_message: String(errMsg || ''), finished_at: nowIso\n      });\n    }\n    await sbRest('POST', 'instaops_execution_logs', {\n      log_id: 'log_' + Date.now() + '_' + safeSlug(req.post_id), request_id: req.request_id, execution_id: req.execution_id,\n      workflow_id: 'w02-publish', workflow_name: 'W02 Publish Content', post_id: req.post_id, operation: 'PUBLISH', trigger_source: 'DASHBOARD',\n      stage: errStage || 'FAILED', status: 'FAILED', started_at: req.started_at, finished_at: nowIso, duration_ms: Date.now() - execStart,\n      error_code: errCode, error_message: String(errMsg || ''), retryable: true\n    });\n    await sbRpc('instaops_release_lock', { p_lock_key: req.lock_key, p_owner_id: workerOwner });\n    return [{ json: { ok: false, post_uuid: req.post_uuid, post_id: req.post_id, status: 'FAILED', error_code: errCode, error: errMsg } }];\n  }\n\n  async function pollContainerUntilReady(containerId, label) {\n    for (var attempt = 1; attempt <= maxPolls; attempt++) {\n      if (attempt > 1) await sleepMs(pollWaitMs);\n      if (attempt % 2 === 0) {\n        await sbRpc('instaops_renew_lock', { p_lock_key: req.lock_key, p_owner_id: workerOwner, p_lease_seconds: 600 });\n      }\n      var stRes;\n      try {\n        stRes = await graphCall('GET', encodeURIComponent(containerId) + '?fields=id,status_code,status');\n      } catch (pollNetErr) {\n        return { ok: false, uncertain: true, error: label + ' polling timeout/network error: ' + (pollNetErr && pollNetErr.message ? pollNetErr.message : 'network error') };\n      }\n      var stBody = stRes.body || {};\n      if (stRes.statusCode >= 500) {\n        if (attempt < maxPolls) continue;\n        return { ok: false, uncertain: true, error: label + ' Graph HTTP ' + stRes.statusCode };\n      }\n      if (stRes.statusCode >= 400 || stBody.error) {\n        return { ok: false, uncertain: false, code: 'META_CONTAINER_ERROR', error: (stBody.error && stBody.error.message) || (label + ' Graph status error HTTP ' + stRes.statusCode) };\n      }\n      var code = String(stBody.status_code || stBody.status || '').toUpperCase();\n      if (code === 'FINISHED' || code === 'PUBLISHED') {\n        return { ok: true, status_code: code, id: containerId };\n      }\n      if (code === 'ERROR' || code === 'EXPIRED') {\n        return { ok: false, uncertain: false, code: code === 'EXPIRED' ? 'META_CONTAINER_EXPIRED' : 'META_CONTAINER_ERROR', error: label + ' container status_code=' + code };\n      }\n    }\n    return { ok: false, uncertain: true, error: label + ' container ' + containerId + ' exceeded bounded polling limit (' + maxPolls + ' checks).' };\n  }\n\n  try {\n    // 1. Load authoritative post, active media_assets, and account status from Supabase (never trust request media URLs!)\n    var postGet = await sbRest('GET', 'instaops_posts?id=eq.' + encodeURIComponent(req.post_uuid) + '&select=*');\n    var post = Array.isArray(postGet.body) ? postGet.body[0] : null;\n    if (!post) {\n      return await failConfirmedPrePublish('POST_NOT_FOUND', 'VALIDATING', 'Post UUID ' + req.post_uuid + ' not found in Supabase.', false);\n    }\n    currentRev = Number(post.revision || 0);\n    var reqRev = Number(req.reviewed_revision || 0);\n    var approvedRev = Number(post.approved_revision || 0);\n\n    if (post.deleted_at || post.status === 'DELETED' || post.status === 'ARCHIVED') {\n      return await failConfirmedPrePublish('POST_DELETED_OR_ARCHIVED', 'VALIDATING', 'Cannot publish deleted or archived post.', false);\n    }\n    if (post.status === 'PUBLISHED' || (post.published_id && String(post.published_id).trim() !== '')) {\n      return await failConfirmedPrePublish('ALREADY_PUBLISHED', 'VALIDATING', 'Post is already published (' + post.published_id + ').', false);\n    }\n    if (post.status !== 'READY' && post.status !== 'SCHEDULED') {\n      return await failConfirmedPrePublish('POST_LOCKED', 'VALIDATING', 'Post status ' + post.status + ' is not eligible for publishing.', false);\n    }\n    if (!currentRev || !reqRev || !approvedRev || reqRev !== currentRev || approvedRev !== currentRev) {\n      return await failConfirmedPrePublish('REVISION_CONFLICT', 'VALIDATING', 'Revision mismatch (db=' + currentRev + ', approved=' + approvedRev + ', reviewed=' + reqRev + ').', false);\n    }\n\n    var igUserId = String(post.ig_user_id || req.ig_user_id || '').trim();\n    var acctRes = await sbRest('GET', 'instaops_accounts?ig_user_id=eq.' + encodeURIComponent(igUserId) + '&limit=1');\n    var acct = Array.isArray(acctRes.body) ? acctRes.body[0] : null;\n    if (!acct || acct.enabled !== true) {\n      return await failConfirmedPrePublish('ACCOUNT_DISABLED', 'VALIDATING', 'Destination account ' + igUserId + ' is disabled or missing in instaops_accounts.', false);\n    }\n\n    var assetsRes = await sbRest('GET', 'instaops_media_assets?post_uuid=eq.' + encodeURIComponent(req.post_uuid) + '&storage_status=eq.ACTIVE&order=media_index.asc');\n    var assets = (Array.isArray(assetsRes.body) ? assetsRes.body : []).sort(function (a, b) { return Number(a.media_index || 0) - Number(b.media_index || 0); });\n    var caption = String(post.caption || post.original_caption || '');\n    if (caption.length > 2200) {\n      return await failConfirmedPrePublish('CAPTION_TOO_LONG', 'VALIDATING', 'Caption exceeds Meta Graph 2,200 character limit.', false);\n    }\n    var mediaType = String(post.media_type || (assets.length > 1 ? 'CAROUSEL' : 'REEL')).toUpperCase();\n    if (mediaType === 'CAROUSEL') {\n      if (assets.length < 2 || assets.length > 10) {\n        return await failConfirmedPrePublish('INVALID_CAROUSEL_COUNT', 'VALIDATING', 'Carousel requires 2-10 ACTIVE assets (found ' + assets.length + ').', false);\n      }\n    } else if (assets.length !== 1) {\n      return await failConfirmedPrePublish('MISSING_MEDIA_ASSET', 'VALIDATING', mediaType + ' requires exactly 1 ACTIVE DB asset (found ' + assets.length + ').', false);\n    }\n\n    for (var ai = 0; ai < assets.length; ai++) {\n      if (!isSafeHttpsUrl(assets[ai].secure_url)) {\n        return await failConfirmedPrePublish('INVALID_MEDIA_URL', 'VALIDATING', 'DB asset ' + ai + ' has missing or unsafe HTTPS URL.', false);\n      }\n    }\n\n    // Transition authoritative state to PUBLISHING\n    await sbRest('PATCH', 'instaops_posts?id=eq.' + encodeURIComponent(req.post_uuid), {\n      status: 'PUBLISHING', execution_id: req.execution_id, request_id: req.request_id, error: '', error_code: '', error_stage: ''\n    });\n    if (req.job_id) {\n      await sbRest('PATCH', 'instaops_jobs?job_id=eq.' + encodeURIComponent(req.job_id), {\n        status: 'RUNNING', stage: 'CREATING_CONTAINER', execution_id: req.execution_id, lock_key: req.lock_key, lock_owner: workerOwner\n      });\n    }\n\n    var parentContainerId = '';\n    var childIds = [];\n\n    if (mediaType === 'CAROUSEL') {\n      // Create ALL 2..10 children in exact media_index order; abort cleanly if any fails\n      for (var cIdx = 0; cIdx < assets.length; cIdx++) {\n        var childAsset = assets[cIdx];\n        var isChildVid = String(childAsset.resource_type || '').toLowerCase() === 'video' || String(childAsset.media_type || '').toUpperCase() === 'VIDEO';\n        var childPayload = isChildVid\n          ? { media_type: 'VIDEO', video_url: childAsset.secure_url, is_carousel_item: true }\n          : { image_url: childAsset.secure_url, is_carousel_item: true };\n\n        var cRes;\n        try {\n          cRes = await graphCall('POST', encodeURIComponent(igUserId) + '/media', childPayload);\n        } catch (cNetErr) {\n          return await failConfirmedPrePublish('CAROUSEL_CHILD_FAILED', 'CREATING_CONTAINER', 'Child ' + cIdx + ' creation failed: ' + (cNetErr && cNetErr.message ? cNetErr.message : 'network error'), true);\n        }\n        var cBody = cRes.body || {};\n        if (cRes.statusCode >= 300 || cBody.error || !cBody.id) {\n          var cErr = (cBody.error && cBody.error.message) || ('Child ' + cIdx + ' creation failed (HTTP ' + cRes.statusCode + ')');\n          return await failConfirmedPrePublish('CAROUSEL_CHILD_FAILED', 'CREATING_CONTAINER', cErr, true);\n        }\n        var childId = String(cBody.id);\n        childIds.push(childId);\n        if (childAsset.id) {\n          await sbRest('PATCH', 'instaops_media_assets?id=eq.' + encodeURIComponent(childAsset.id), { ig_child_container_id: childId });\n        }\n      }\n      await sbRest('PATCH', 'instaops_posts?id=eq.' + encodeURIComponent(req.post_uuid), { child_container_ids: childIds });\n\n      // Bounded poll for ALL video (or pending) child containers until FINISHED before parent creation\n      if (req.job_id) {\n        await sbRest('PATCH', 'instaops_jobs?job_id=eq.' + encodeURIComponent(req.job_id), { stage: 'POLLING_CHILDREN' });\n      }\n      for (var pIdx = 0; pIdx < assets.length; pIdx++) {\n        var pChildAsset = assets[pIdx];\n        var isVidChild = String(pChildAsset.resource_type || '').toLowerCase() === 'video' || String(pChildAsset.media_type || '').toUpperCase() === 'VIDEO';\n        if (isVidChild) {\n          var childPoll = await pollContainerUntilReady(childIds[pIdx], 'CAROUSEL_CHILD_' + pIdx);\n          if (!childPoll.ok) {\n            if (childPoll.uncertain) return await markUncertain('POLLING_CHILDREN', childPoll.error, { child_container_ids: childIds });\n            return await failConfirmedPrePublish(childPoll.code || 'CAROUSEL_CHILD_ERROR', 'POLLING_CHILDREN', childPoll.error, true);\n          }\n        }\n      }\n\n      // All children ready -> create parent CAROUSEL container\n      var pContRes;\n      try {\n        pContRes = await graphCall('POST', encodeURIComponent(igUserId) + '/media', {\n          media_type: 'CAROUSEL',\n          children: childIds.join(','),\n          caption: caption\n        });\n      } catch (parErr) {\n        return await failConfirmedPrePublish('CAROUSEL_PARENT_FAILED', 'CREATING_CONTAINER', 'Parent container creation failed: ' + (parErr && parErr.message ? parErr.message : 'network error'), true);\n      }\n      var pContBody = pContRes.body || {};\n      if (pContRes.statusCode >= 300 || pContBody.error || !pContBody.id) {\n        return await failConfirmedPrePublish('CAROUSEL_PARENT_FAILED', 'CREATING_CONTAINER', (pContBody.error && pContBody.error.message) || ('Parent container error HTTP ' + pContRes.statusCode), true);\n      }\n      parentContainerId = String(pContBody.id);\n    } else {\n      // Single REEL or IMAGE\n      var singleAsset = assets[0];\n      var singlePayload = (mediaType === 'IMAGE' && String(singleAsset.resource_type || '') !== 'video')\n        ? { image_url: singleAsset.secure_url, caption: caption }\n        : { media_type: 'REELS', video_url: singleAsset.secure_url, caption: caption };\n      var sContRes;\n      try {\n        sContRes = await graphCall('POST', encodeURIComponent(igUserId) + '/media', singlePayload);\n      } catch (sErr) {\n        return await failConfirmedPrePublish('CONTAINER_CREATE_FAILED', 'CREATING_CONTAINER', sErr && sErr.message ? sErr.message : 'Container creation failed', true);\n      }\n      var sContBody = sContRes.body || {};\n      if (sContRes.statusCode >= 300 || sContBody.error || !sContBody.id) {\n        return await failConfirmedPrePublish('CONTAINER_CREATE_FAILED', 'CREATING_CONTAINER', (sContBody.error && sContBody.error.message) || ('Container creation failed HTTP ' + sContRes.statusCode), true);\n      }\n      parentContainerId = String(sContBody.id);\n    }\n\n    await sbRest('PATCH', 'instaops_posts?id=eq.' + encodeURIComponent(req.post_uuid), { container_id: parentContainerId, child_container_ids: childIds });\n    if (req.job_id) {\n      await sbRest('PATCH', 'instaops_jobs?job_id=eq.' + encodeURIComponent(req.job_id), { stage: 'POLLING_CONTAINER' });\n    }\n\n    var parentPoll = await pollContainerUntilReady(parentContainerId, mediaType + '_PARENT');\n    if (!parentPoll.ok) {\n      if (parentPoll.uncertain) return await markUncertain('POLLING_CONTAINER', parentPoll.error, { container_id: parentContainerId });\n      return await failConfirmedPrePublish(parentPoll.code || 'CONTAINER_FAILED', 'POLLING_CONTAINER', parentPoll.error, true);\n    }\n\n    // Guard against double-publishing an already PUBLISHED container\n    if (parentPoll.status_code === 'PUBLISHED') {\n      return await markUncertain('ALREADY_PUBLISHED_CONTAINER', 'Container ' + parentContainerId + ' already reports status_code=PUBLISHED; skipped duplicate media_publish.', { container_id: parentContainerId });\n    }\n\n    await sbRpc('instaops_renew_lock', { p_lock_key: req.lock_key, p_owner_id: workerOwner, p_lease_seconds: 600 });\n    if (req.job_id) {\n      await sbRest('PATCH', 'instaops_jobs?job_id=eq.' + encodeURIComponent(req.job_id), { stage: 'PUBLISHING_MEDIA' });\n    }\n\n    var pubRes;\n    try {\n      pubRes = await graphCall('POST', encodeURIComponent(igUserId) + '/media_publish', { creation_id: parentContainerId });\n    } catch (pubNetErr) {\n      return await markUncertain('PUBLISHING_MEDIA', 'media_publish network/timeout error: ' + (pubNetErr && pubNetErr.message ? pubNetErr.message : 'timeout'), { container_id: parentContainerId });\n    }\n    var pubBody = pubRes.body || {};\n    if (pubRes.statusCode >= 500) {\n      return await markUncertain('PUBLISHING_MEDIA', 'media_publish ambiguous HTTP ' + pubRes.statusCode, { container_id: parentContainerId });\n    }\n    if (pubRes.statusCode >= 400 || pubBody.error || !pubBody.id) {\n      return await failConfirmedPrePublish('META_PUBLISH_FAILED', 'PUBLISHING_MEDIA', (pubBody.error && pubBody.error.message) || ('media_publish rejected HTTP ' + pubRes.statusCode), true);\n    }\n\n    var publishedId = String(pubBody.id);\n    var nowIso = new Date().toISOString();\n\n    // CRITICAL: Persist published_id + PUBLISHED status IMMEDIATELY BEFORE fetching permalink so permalink failure never loses published_id or triggers duplicate media_publish!\n    var pubSave = await sbRest('PATCH', 'instaops_posts?id=eq.' + encodeURIComponent(req.post_uuid), {\n      status: 'PUBLISHED',\n      published_id: publishedId,\n      published_at: nowIso,\n      processed_at: nowIso,\n      container_id: parentContainerId,\n      child_container_ids: childIds,\n      error: '',\n      error_code: '',\n      error_stage: '',\n      sheets_sync_status: 'PENDING'\n    });\n    var savedPostRow = Array.isArray(pubSave.body) && pubSave.body[0] ? pubSave.body[0] : Object.assign({}, post, { status: 'PUBLISHED', published_id: publishedId, published_at: nowIso, container_id: parentContainerId });\n\n    // Best-effort permalink lookup (isolated try/catch — never reverts PUBLISHED or retries media_publish)\n    var permalink = '';\n    try {\n      var permRes = await graphCall('GET', encodeURIComponent(publishedId) + '?fields=id,permalink');\n      if (permRes.statusCode < 300 && permRes.body && permRes.body.permalink) {\n        permalink = String(permRes.body.permalink);\n        var permPatch = await sbRest('PATCH', 'instaops_posts?id=eq.' + encodeURIComponent(req.post_uuid), { published_url: permalink });\n        if (Array.isArray(permPatch.body) && permPatch.body[0]) savedPostRow = permPatch.body[0];\n        else savedPostRow.published_url = permalink;\n      }\n    } catch (_) {\n      await sbRest('POST', 'instaops_audit_events', {\n        post_uuid: req.post_uuid, entity_type: 'POST', entity_id: req.post_id,\n        action: 'PERMALINK_FETCH_SKIPPED', details: { published_id: publishedId }\n      });\n    }\n\n    await enqueueSync('POST', req.post_uuid, req.post_id, 'UPSERT', { post_uuid: req.post_uuid, row: savedPostRow }, currentRev);\n    await sbRest('POST', 'instaops_execution_logs', {\n      log_id: 'log_' + Date.now() + '_' + safeSlug(req.post_id), request_id: req.request_id, execution_id: req.execution_id,\n      workflow_id: 'w02-publish', workflow_name: 'W02 Publish Content', post_id: req.post_id, operation: 'PUBLISH', trigger_source: 'DASHBOARD',\n      stage: 'COMPLETED', status: 'SUCCESS', started_at: req.started_at, finished_at: nowIso, duration_ms: Date.now() - execStart, retryable: false\n    });\n    await enqueueSync('EXECUTION_LOG', req.post_uuid, 'log_' + safeSlug(req.post_id) + '_' + Date.now(), 'UPSERT', {\n      log_id: 'log_' + Date.now() + '_' + safeSlug(req.post_id), request_id: req.request_id, execution_id: req.execution_id,\n      workflow_id: 'w02-publish', workflow_name: 'W02 Publish Content', post_id: req.post_id, operation: 'PUBLISH', trigger_source: 'DASHBOARD',\n      stage: 'COMPLETED', status: 'SUCCESS', started_at: req.started_at, finished_at: nowIso, duration_ms: Date.now() - execStart, retryable: false, created_at: nowIso\n    }, currentRev);\n\n    if (req.job_id) {\n      await sbRest('PATCH', 'instaops_jobs?job_id=eq.' + encodeURIComponent(req.job_id), {\n        status: 'COMPLETED', stage: 'COMPLETED', finished_at: nowIso\n      });\n    }\n    await sbRpc('instaops_release_lock', { p_lock_key: req.lock_key, p_owner_id: workerOwner });\n\n    return [{\n      json: {\n        ok: true,\n        post_uuid: req.post_uuid,\n        post_id: req.post_id,\n        media_type: mediaType,\n        status: 'PUBLISHED',\n        container_id: parentContainerId,\n        child_container_ids: childIds,\n        published_id: publishedId,\n        published_url: permalink\n      }\n    }];\n  } catch (err) {\n    return await failConfirmedPrePublish('PUBLISH_FAILED', 'ORCHESTRATION', err && err.message ? err.message : 'Unexpected publish failure', true);\n  }\n}).call(this);"
       }
     }
   ],
   "connections": {
-    "WEBHOOK | Publish Request": { "main": [[{ "node": "CODE | Verify Auth & Approval Gate", "type": "main", "index": 0 }]] },
-    "CODE | Verify Auth & Approval Gate": { "main": [[{ "node": "IF | Passed Request Guard", "type": "main", "index": 0 }]] },
+    "WEBHOOK | Publish Request": {
+      "main": [[{ "node": "CODE | Verify Auth & Approval Gate", "type": "main", "index": 0 }]]
+    },
+    "CODE | Verify Auth & Approval Gate": {
+      "main": [[{ "node": "IF | Passed Request Guard", "type": "main", "index": 0 }]]
+    },
     "IF | Passed Request Guard": {
       "main": [
         [{ "node": "RESPOND | Accepted 202", "type": "main", "index": 0 }],
         [{ "node": "RESPOND | Reject 4xx", "type": "main", "index": 0 }]
       ]
     },
-    "RESPOND | Accepted 202": { "main": [[{ "node": "SUPABASE | Read Authoritative Post & Assets", "type": "main", "index": 0 }]] },
-    "SUPABASE | Read Authoritative Post & Assets": { "main": [[{ "node": "CODE | Re-verify Approved Revision & Build Container Requests", "type": "main", "index": 0 }]] },
-    "CODE | Re-verify Approved Revision & Build Container Requests": { "main": [[{ "node": "IF | DB Approval Verified", "type": "main", "index": 0 }]] },
-    "IF | DB Approval Verified": { "main": [[{ "node": "SUPABASE | Mark PUBLISHING Checkpoint", "type": "main", "index": 0 }], []] },
-    "SUPABASE | Mark PUBLISHING Checkpoint": { "main": [[{ "node": "IF | Is Multi-Item Carousel", "type": "main", "index": 0 }]] },
-    "IF | Is Multi-Item Carousel": {
-      "main": [
-        [{ "node": "CODE | Expand Carousel Child Items", "type": "main", "index": 0 }],
-        [{ "node": "HTTP | Meta Graph Create Single Media Container", "type": "main", "index": 0 }]
-      ]
-    },
-    "CODE | Expand Carousel Child Items": { "main": [[{ "node": "HTTP | Meta Graph Create Carousel Child Container", "type": "main", "index": 0 }]] },
-    "HTTP | Meta Graph Create Carousel Child Container": { "main": [[{ "node": "CODE | Gather Child Container IDs", "type": "main", "index": 0 }]] },
-    "CODE | Gather Child Container IDs": { "main": [[{ "node": "WAIT | Carousel Children Ready", "type": "main", "index": 0 }]] },
-    "WAIT | Carousel Children Ready": { "main": [[{ "node": "HTTP | Meta Graph Create Parent CAROUSEL Container", "type": "main", "index": 0 }]] },
-    "HTTP | Meta Graph Create Parent CAROUSEL Container": { "main": [[{ "node": "CODE | Unify Container ID", "type": "main", "index": 0 }]] },
-    "HTTP | Meta Graph Create Single Media Container": { "main": [[{ "node": "CODE | Unify Container ID", "type": "main", "index": 0 }]] },
-    "CODE | Unify Container ID": { "main": [[{ "node": "SUPABASE | Save Container Checkpoint", "type": "main", "index": 0 }]] },
-    "SUPABASE | Save Container Checkpoint": { "main": [[{ "node": "WAIT | Poll Container Delay", "type": "main", "index": 0 }]] },
-    "WAIT | Poll Container Delay": { "main": [[{ "node": "HTTP | Meta Graph Poll status_code", "type": "main", "index": 0 }]] },
-    "HTTP | Meta Graph Poll status_code": { "main": [[{ "node": "CODE | Evaluate Container Status", "type": "main", "index": 0 }]] },
-    "CODE | Evaluate Container Status": { "main": [[{ "node": "IF | Container FINISHED", "type": "main", "index": 0 }]] },
-    "IF | Container FINISHED": {
-      "main": [
-        [{ "node": "HTTP | Meta Graph media_publish", "type": "main", "index": 0 }],
-        [{ "node": "SUPABASE | Mark VERIFY_MANUALLY on Timeout", "type": "main", "index": 0 }]
-      ]
-    },
-    "HTTP | Meta Graph media_publish": { "main": [[{ "node": "HTTP | Fetch Published Permalink", "type": "main", "index": 0 }]] },
-    "HTTP | Fetch Published Permalink": { "main": [[{ "node": "SUPABASE | Save PUBLISHED State", "type": "main", "index": 0 }]] },
-    "SUPABASE | Save PUBLISHED State": { "main": [[{ "node": "SHEETS | Sync Published By Permanent ID", "type": "main", "index": 0 }]] }
+    "RESPOND | Accepted 202": {
+      "main": [[{ "node": "CODE | Authoritative Gate, Carousel & Bounded Meta Publish", "type": "main", "index": 0 }]]
+    }
   }
 }

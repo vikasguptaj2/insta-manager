@@ -48,6 +48,18 @@ CREATE INDEX IF NOT EXISTS idx_instaops_sync_queue_claimable
   ON public.instaops_sync_queue (status, next_retry_at ASC)
   WHERE status IN ('PENDING', 'FAILED');
 
+CREATE INDEX IF NOT EXISTS idx_instaops_sync_queue_processing_stale
+  ON public.instaops_sync_queue (locked_at ASC)
+  WHERE status = 'PROCESSING';
+
+CREATE INDEX IF NOT EXISTS idx_instaops_sync_queue_entity_rev
+  ON public.instaops_sync_queue (entity_uuid, source_revision DESC)
+  WHERE entity_type = 'POST';
+
+CREATE INDEX IF NOT EXISTS idx_instaops_jobs_unresolved_publish
+  ON public.instaops_jobs (post_uuid, created_at DESC)
+  WHERE operation = 'PUBLISH' AND status IN ('QUEUED', 'RUNNING', 'OUTCOME_UNKNOWN');
+
 -- Automatic updated_at triggers
 DROP TRIGGER IF EXISTS trg_instaops_accounts_updated_at ON public.instaops_accounts;
 CREATE TRIGGER trg_instaops_accounts_updated_at

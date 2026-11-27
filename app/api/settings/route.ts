@@ -26,6 +26,7 @@ export async function GET(req: Request) {
         atomicLockProvider: cfg.atomicLockProvider,
         flags: ov.flags,
       },
+      readiness: ov.readiness,
       validation,
     });
   });

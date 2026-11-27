@@ -111,6 +111,57 @@ export function SettingsView() {
         </section>
       )}
 
+      {overview?.readiness && (
+        <section className="panel" aria-label="Production readiness matrix">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
+            <h2 className="panel-title" style={{ margin: 0 }}>Production Readiness Matrix</h2>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              <span className={`badge ${overview.readiness.readyForExtraction ? 'badge-success' : 'badge-warning'}`}>
+                Extraction: {overview.readiness.readyForExtraction ? 'READY' : 'GATED'}
+              </span>
+              <span className={`badge ${overview.readiness.readyForPublishing ? 'badge-success' : 'badge-warning'}`}>
+                Publishing: {overview.readiness.readyForPublishing ? 'READY' : 'GATED'}
+              </span>
+              <span className={`badge ${overview.readiness.readyForDeletion ? 'badge-success' : 'badge-warning'}`}>
+                Deletion: {overview.readiness.readyForDeletion ? 'READY' : 'GATED'}
+              </span>
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 8 }}>
+            {[
+              ['Config Valid', overview.readiness.configurationValid],
+              ['Supabase Reachable', overview.readiness.supabaseReachable],
+              ['Schema Verified', overview.readiness.databaseSchemaVerified],
+              ['Atomic RPC Self-Test', overview.readiness.atomicRpcTested],
+              ['RLS Verified', overview.readiness.rlsVerified],
+              ['n8n Authenticated', overview.readiness.n8nAuthenticated],
+              ['W01-W05 Configured', overview.readiness.requiredWorkflowsConfigured],
+              ['Downloader Auth', overview.readiness.downloaderAuthVerified],
+              ['Cloudinary Auth', overview.readiness.cloudinaryAuthenticated],
+              ['Instagram Auth', overview.readiness.instagramAuthenticated],
+              ['n8n $env / $vars Access', overview.readiness.n8nEnvAccessOk],
+            ].map(([label, ok]) => (
+              <div
+                key={String(label)}
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  padding: '8px 10px',
+                  borderRadius: 'var(--radius-sm)',
+                  background: 'var(--bg-subtle)',
+                  border: '1px solid var(--border-default)',
+                  fontSize: 12,
+                }}
+              >
+                <span>{String(label)}</span>
+                <span className={`badge ${ok ? 'badge-success' : 'badge-danger'}`}>{ok ? 'PASS' : 'NO'}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       <section className="panel">
         <div className="panel-header">
           <h2 className="panel-title">Live Service Connections</h2>

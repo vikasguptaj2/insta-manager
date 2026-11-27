@@ -1,9 +1,15 @@
 import { handleApiRequest, jsonOk } from '../../../lib/api-handler';
-import { getConnectionsHealth } from '../../../lib/service';
+import { getReadinessDiagnostics } from '../../../lib/service';
 
 export async function GET(req: Request) {
   return handleApiRequest(req, async () => {
-    const connections = await getConnectionsHealth();
-    return jsonOk({ ok: true, connections, checkedAt: new Date().toISOString() });
+    const { readiness, connections, validation } = await getReadinessDiagnostics();
+    return jsonOk({
+      ok: true,
+      connections,
+      readiness,
+      validation,
+      checkedAt: new Date().toISOString(),
+    });
   });
 }

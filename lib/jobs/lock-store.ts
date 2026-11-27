@@ -7,6 +7,7 @@ import { getConfig } from '../config/env';
 
 export interface LockAcquireInput {
   lock_key: string;
+  post_uuid?: string;
   post_id: string;
   operation: JobOperation;
   owner_id: string;
@@ -24,6 +25,8 @@ export interface LockStore {
   readonly mode: 'supabase' | 'postgres' | 'local';
   ensureSchema(): Promise<void>;
   acquireLock(input: LockAcquireInput): Promise<JobLock>;
+  transferOrClaimLock(input: LockAcquireInput & { expectedOwner?: string }): Promise<JobLock>;
+  renewLock(lockKey: string, ownerId: string, leaseSeconds?: number): Promise<{ renewed: boolean; expires_at?: string }>;
   releaseLock(lockKey: string, ownerId: string): Promise<boolean>;
   listActiveLocks(): Promise<JobLock[]>;
   releaseStaleLocks(nowIso?: string): Promise<number>;
@@ -118,6 +121,48 @@ export class PostgresLockStore implements LockStore {
       });
     }
     return row;
+  }
+
+  async transferOrClaimLock(input: LockAcquireInput & { expectedOwner?: string }): Promise<JobLock> {
+    await this.ensureSchema();
+    const leaseSec = Math.max(15, Math.min(3600, input.leaseSeconds ?? 300));
+    const expectedOwner = (input.expectedOwner ?? '').trim();
+    const res = await this.pool.query(
+      `
+      INSERT INTO instaops_v2.job_locks (lock_key, post_id, operation, owner_id, request_id, acquired_at, expires_at)
+      VALUES ($1, $2, $3, $4, $5, NOW(), NOW() + ($6::text || ' seconds')::interval)
+      ON CONFLICT (lock_key) DO UPDATE
+        SET post_id = EXCLUDED.post_id,
+            operation = EXCLUDED.operation,
+            owner_id = EXCLUDED.owner_id,
+            request_id = EXCLUDED.request_id,
+            expires_at = EXCLUDED.expires_at
+      WHERE instaops_v2.job_locks.expires_at < NOW()
+         OR instaops_v2.job_locks.owner_id = EXCLUDED.owner_id
+         OR ($7 <> '' AND instaops_v2.job_locks.owner_id = $7)
+      RETURNING lock_key, post_id, operation, owner_id, request_id, acquired_at::text, expires_at::text;
+      `,
+      [input.lock_key, input.post_id, input.operation, input.owner_id, input.request_id, leaseSec, expectedOwner],
+    );
+    const row = res.rows[0] as JobLock | undefined;
+    if (!row) {
+      throw new AppError('POST_LOCKED', `Lock transfer failed for ${input.post_id}: active owner mismatch.`, {
+        httpStatus: 409,
+        details: { lock_key: input.lock_key },
+      });
+    }
+    return row;
+  }
+
+  async renewLock(lockKey: string, ownerId: string, leaseSeconds = 300): Promise<{ renewed: boolean; expires_at?: string }> {
+    await this.ensureSchema();
+    const leaseSec = Math.max(15, Math.min(3600, leaseSeconds));
+    const res = await this.pool.query(
+      `UPDATE instaops_v2.job_locks SET expires_at = NOW() + ($3::text || ' seconds')::interval WHERE lock_key = $1 AND owner_id = $2 RETURNING expires_at::text;`,
+      [lockKey, ownerId, leaseSec],
+    );
+    const row = res.rows[0] as { expires_at?: string } | undefined;
+    return row ? { renewed: true, expires_at: row.expires_at } : { renewed: false };
   }
 
   async releaseLock(lockKey: string, ownerId: string): Promise<boolean> {
@@ -305,6 +350,7 @@ export class LocalLockStore implements LockStore {
     const leaseSec = Math.max(15, Math.min(3600, input.leaseSeconds ?? 300));
     const lock: JobLock = {
       lock_key: input.lock_key,
+      post_uuid: input.post_uuid,
       post_id: input.post_id,
       operation: input.operation,
       owner_id: input.owner_id,
@@ -315,6 +361,48 @@ export class LocalLockStore implements LockStore {
     this.locks.set(input.lock_key, lock);
     await this.persist();
     return lock;
+  }
+
+  async transferOrClaimLock(input: LockAcquireInput & { expectedOwner?: string }): Promise<JobLock> {
+    await this.ensureSchema();
+    const existing = this.locks.get(input.lock_key);
+    const nowMs = Date.now();
+    const expectedOwner = (input.expectedOwner ?? '').trim();
+    if (
+      existing &&
+      Date.parse(existing.expires_at) > nowMs &&
+      existing.owner_id !== input.owner_id &&
+      (!expectedOwner || existing.owner_id !== expectedOwner)
+    ) {
+      throw new AppError('POST_LOCKED', `Lock transfer rejected for ${input.post_id}: held by ${existing.owner_id}.`, {
+        httpStatus: 409,
+        details: { owner_id: existing.owner_id, expires_at: existing.expires_at },
+      });
+    }
+    const leaseSec = Math.max(15, Math.min(3600, input.leaseSeconds ?? 300));
+    const lock: JobLock = {
+      lock_key: input.lock_key,
+      post_uuid: input.post_uuid ?? existing?.post_uuid,
+      post_id: input.post_id,
+      operation: input.operation,
+      owner_id: input.owner_id,
+      request_id: input.request_id,
+      acquired_at: existing?.acquired_at ?? new Date(nowMs).toISOString(),
+      expires_at: new Date(nowMs + leaseSec * 1000).toISOString(),
+    };
+    this.locks.set(input.lock_key, lock);
+    await this.persist();
+    return lock;
+  }
+
+  async renewLock(lockKey: string, ownerId: string, leaseSeconds = 300): Promise<{ renewed: boolean; expires_at?: string }> {
+    const existing = this.locks.get(lockKey);
+    if (!existing || existing.owner_id !== ownerId) return { renewed: false };
+    const leaseSec = Math.max(15, Math.min(3600, leaseSeconds));
+    const expires_at = new Date(Date.now() + leaseSec * 1000).toISOString();
+    this.locks.set(lockKey, { ...existing, expires_at });
+    await this.persist();
+    return { renewed: true, expires_at };
   }
 
   async releaseLock(lockKey: string, ownerId: string): Promise<boolean> {

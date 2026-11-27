@@ -23,9 +23,9 @@
       "name": "CODE | Validate & Safeguard",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [360, 300],
+      "position": [380, 300],
       "parameters": {
-        "jsCode": "// Safeguard marker: INSTAOPS_V2_EXTRACT — extracts media/captions to Supabase Primary + Cloudinary, stops at DRAFT.\nconst item = $input.first().json || {};\nconst headers = item.headers || {};\nconst body = item.body || item;\nconst expected = String($env.N8N_WEBHOOK_SECRET || '');\nconst provided = String(headers['x-dashboard-secret'] || headers['X-Dashboard-Secret'] || '');\n\nfunction safeEqual(a, b) {\n  if (!a || a.length !== b.length) return false;\n  let diff = 0;\n  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);\n  return diff === 0;\n}\n\nconst postUuid = String(body.post_uuid || '').trim();\nconst postId = String(body.post_id || '').trim();\nconst sourceUrl = String(body.source_instagram_url || '').trim();\nconst authorized = body.authorized === true;\n\nlet error = '';\nif (!expected || !safeEqual(provided, expected)) {\n  error = 'Unauthorized webhook secret.';\n} else if (!postId || !/^https:\\/\\/(www\\.)?instagram\\.com\\/(p|reel|reels|tv)\\/[A-Za-z0-9_-]+/i.test(sourceUrl)) {\n  error = 'Valid post_id and canonical Instagram URL required.';\n} else if (!authorized) {\n  error = 'Explicit owner authorization (authorized: true) is required.';\n}\n\nreturn [{\n  json: {\n    valid: !error,\n    error,\n    httpStatus: error.includes('Unauthorized') ? 403 : error ? 422 : 202,\n    post_uuid: postUuid,\n    post_id: postId,\n    source_instagram_url: sourceUrl,\n    expected_revision: String(body.expected_revision || '1'),\n    request_id: String(body.request_id || ''),\n    job_id: String(body.job_id || ''),\n    execution_id: String($execution.id || ''),\n    started_at: new Date().toISOString()\n  }\n}];"
+        "jsCode": "// Safeguard marker: INSTAOPS_V2_EXTRACT — extracts media/captions to Supabase Primary + Cloudinary, stops at DRAFT.\nfunction readCfg(key, fallback) {\n  var blocked = false;\n  try {\n    if (typeof $env !== 'undefined' && $env && $env[key] !== undefined && $env[key] !== null && $env[key] !== '') {\n      return { value: String($env[key]), source: 'env', blocked: false };\n    }\n  } catch (_) {\n    blocked = true;\n  }\n  try {\n    if (typeof $vars !== 'undefined' && $vars && $vars[key] !== undefined && $vars[key] !== null && $vars[key] !== '') {\n      return { value: String($vars[key]), source: 'vars', blocked: blocked };\n    }\n  } catch (_) {}\n  return { value: fallback || '', source: fallback ? 'default' : 'missing', blocked: blocked };\n}\n\nfunction safeEqual(a, b) {\n  if (!a || a.length !== b.length) return false;\n  var diff = 0;\n  for (var i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);\n  return diff === 0;\n}\n\nvar item = $input.first().json || {};\nvar headers = item.headers || {};\nvar body = item.body || item;\nvar secretCfg = readCfg('N8N_WEBHOOK_SECRET', '');\nvar expected = secretCfg.value;\nvar provided = String(headers['x-dashboard-secret'] || headers['X-Dashboard-Secret'] || '');\n\nvar postUuid = String(body.post_uuid || '').trim();\nvar postId = String(body.post_id || '').trim();\nvar sourceUrl = String(body.source_instagram_url || '').trim();\nvar authorized = body.authorized === true;\nvar uuidOk = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(postUuid);\nvar urlOk = /^https:\\/\\/(www\\.)?instagram\\.com\\/(p|reel|reels|tv)\\/[A-Za-z0-9_-]+/i.test(sourceUrl);\n\nvar error = '';\nvar httpStatus = 202;\nif (secretCfg.blocked && !expected) {\n  error = 'n8n $env/secret access denied; configure N8N_BLOCK_ENV_ACCESS_IN_NODE=false or $vars.';\n  httpStatus = 500;\n} else if (!expected || !safeEqual(provided, expected)) {\n  error = 'Unauthorized webhook secret.';\n  httpStatus = 403;\n} else if (!uuidOk || !postId || !urlOk) {\n  error = 'Valid permanent post_uuid, post_id, and canonical Instagram URL required.';\n  httpStatus = 422;\n} else if (!authorized) {\n  error = 'Explicit owner authorization (authorized: true) is required.';\n  httpStatus = 403;\n}\n\nreturn [{\n  json: {\n    valid: !error,\n    error: error,\n    httpStatus: httpStatus,\n    post_uuid: postUuid,\n    post_id: postId,\n    source_instagram_url: sourceUrl,\n    expected_revision: String(body.expected_revision || '1'),\n    request_id: String(body.request_id || ''),\n    job_id: String(body.job_id || ''),\n    lock_key: String(body.lock_key || ('post:' + postUuid)),\n    lock_owner: String(body.lock_owner || ''),\n    execution_id: String((typeof $execution !== 'undefined' && $execution && $execution.id) || ''),\n    started_at: new Date().toISOString()\n  }\n}];"
       }
     },
     {
@@ -33,7 +33,7 @@
       "name": "IF | Valid Request",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [580, 300],
+      "position": [620, 300],
       "parameters": {
         "conditions": {
           "boolean": [{ "value1": "={{ $json.valid }}", "value2": true }]
@@ -45,7 +45,7 @@
       "name": "RESPOND | Validation Error",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [800, 440],
+      "position": [860, 440],
       "parameters": {
         "respondWith": "json",
         "responseBody": "={{ JSON.stringify({ ok: false, error: $json.error }) }}",
@@ -57,238 +57,39 @@
       "name": "RESPOND | Accepted 202",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [800, 200],
+      "position": [860, 180],
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ JSON.stringify({ accepted: true, execution_id: $json.execution_id, post_uuid: $json.post_uuid, post_id: $json.post_id, job_id: $json.job_id, request_id: $json.request_id }) }}",
+        "responseBody": "={{ JSON.stringify({ accepted: true, execution_id: $json.execution_id, post_uuid: $json.post_uuid, post_id: $json.post_id, job_id: $json.job_id, request_id: $json.request_id, lock_key: $json.lock_key }) }}",
         "options": { "responseCode": 202 }
       }
     },
     {
-      "id": "w01-sb-mark-extracting",
-      "name": "SUPABASE | Mark Post EXTRACTING",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [1020, 200],
-      "parameters": {
-        "method": "PATCH",
-        "url": "={{ ($env.SUPABASE_URL || 'https://cdgwdlhesgcxmswsamrj.supabase.co').replace(/\\/$/, '') + '/rest/v1/instaops_posts?post_id=eq.' + encodeURIComponent($json.post_id) }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY || '' }}" },
-            { "name": "Authorization", "value": "={{ 'Bearer ' + ($env.SUPABASE_SERVICE_ROLE_KEY || '') }}" },
-            { "name": "Prefer", "value": "return=representation" }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ status: 'EXTRACTING', execution_id: $json.execution_id, request_id: $json.request_id, error: '', error_code: '', error_stage: '' }) }}",
-        "options": { "timeout": 15000 }
-      }
-    },
-    {
-      "id": "w01-call-downloader",
-      "name": "HTTP | Resolve Downloader API",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "continueOnFail": true,
-      "position": [1240, 200],
-      "parameters": {
-        "method": "POST",
-        "url": "={{ ($env.DOWNLOADER_BASE_URL || 'https://ig-dowloader-nnnn.vercel.app').replace(/\\/$/, '') + '/api/n8n/resolve' }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "Authorization", "value": "={{ 'Bearer ' + ($env.DOWNLOADER_API_KEY || '') }}" },
-            { "name": "Content-Type", "value": "application/json" }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ url: $('CODE | Validate & Safeguard').item.json.source_instagram_url, post_id: $('CODE | Validate & Safeguard').item.json.post_id, mode: 'extract' }) }}",
-        "options": { "timeout": 45000 }
-      }
-    },
-    {
-      "id": "w01-prep-uploads",
-      "name": "CODE | Parse Downloader & Sign Cloudinary",
+      "id": "w01-orchestrator",
+      "name": "CODE | Atomic Lock, Download, Upload & Finalize Extraction",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1460, 200],
+      "position": [1140, 180],
       "parameters": {
-        "jsCode": "const ctx = $('CODE | Validate & Safeguard').item.json;\nconst sbRaw = $('SUPABASE | Mark Post EXTRACTING').first()?.json;\nconst sbPost = Array.isArray(sbRaw) ? (sbRaw[0] || {}) : (sbRaw || {});\nconst postUuid = ctx.post_uuid || sbPost.id || '';\nconst res = $input.first().json || {};\nconst hasErr = Boolean(res.error) || res.ok === false || !Array.isArray(res.media) || res.media.length === 0;\n\nif (hasErr) {\n  const msg = String(res.message || res.error?.message || res.error || 'Downloader returned empty media array.');\n  const isRate = /429|rate|limit|cooldown/i.test(msg);\n  return [{\n    json: {\n      uploadOk: false,\n      error_code: isRate ? 'UPSTREAM_RATE_LIMIT' : 'DOWNLOADER_FAILED',\n      error_message: msg.slice(0, 500),\n      post_uuid: postUuid,\n      post_id: ctx.post_id,\n      execution_id: ctx.execution_id,\n      request_id: ctx.request_id\n    }\n  }];\n}\n\nfunction sha1Hex(str) {\n  function rotl(n, s) { return (n << s) | (n >>> (32 - s)); }\n  const utf8 = unescape(encodeURIComponent(str));\n  const words = [];\n  for (let i = 0; i < utf8.length; i++) words[i >> 2] = (words[i >> 2] || 0) | ((utf8.charCodeAt(i) & 0xff) << (24 - (i % 4) * 8));\n  words[utf8.length >> 2] = (words[utf8.length >> 2] || 0) | (0x80 << (24 - (utf8.length % 4) * 8));\n  words[((utf8.length + 8) >> 6 << 4) + 15] = utf8.length * 8;\n  let h0 = 0x67452301, h1 = 0xefcdab89, h2 = 0x98badcfe, h3 = 0x10325476, h4 = 0xc3d2e1f0;\n  const w = new Array(80);\n  for (let i = 0; i < words.length; i += 16) {\n    let a = h0, b = h1, c = h2, d = h3, e = h4;\n    for (let t = 0; t < 80; t++) {\n      w[t] = t < 16 ? (words[i + t] || 0) : rotl(w[t - 3] ^ w[t - 8] ^ w[t - 14] ^ w[t - 16], 1);\n      const f = t < 20 ? ((b & c) | ((~b) & d)) + 0x5a827999 : t < 40 ? (b ^ c ^ d) + 0x6ed9eba1 : t < 60 ? ((b & c) | (b & d) | (c & d)) + 0x8f1bbcdc : (b ^ c ^ d) + 0xca62c1d6;\n      const temp = (rotl(a, 5) + f + e + w[t]) >>> 0;\n      e = d; d = c; c = rotl(b, 30) >>> 0; b = a; a = temp;\n    }\n    h0 = (h0 + a) >>> 0; h1 = (h1 + b) >>> 0; h2 = (h2 + c) >>> 0; h3 = (h3 + d) >>> 0; h4 = (h4 + e) >>> 0;\n  }\n  return [h0, h1, h2, h3, h4].map(n => n.toString(16).padStart(8, '0')).join('');\n}\n\nconst cloudName = String($env.CLOUDINARY_CLOUD_NAME || 'djkkknb9k');\nconst apiKey = String($env.CLOUDINARY_API_KEY || '');\nconst apiSecret = String($env.CLOUDINARY_API_SECRET || '');\nconst ts = Math.floor(Date.now() / 1000);\nconst media = res.media;\nconst mediaCount = media.length;\nconst imageCount = media.filter(m => String(m.type).toLowerCase() === 'image').length;\nconst videoCount = media.filter(m => String(m.type).toLowerCase() !== 'image').length;\nconst mediaType = mediaCount > 1 ? 'CAROUSEL' : videoCount > 0 ? 'REEL' : 'IMAGE';\nconst meta = res.postMetadata || {};\nconst sourceId = String(res.sourceId || ctx.post_id).replace(/[^A-Za-z0-9_-]/g, '_');\nconst safePost = ctx.post_id.replace(/[^A-Za-z0-9_-]/g, '_');\n\nreturn media.map((m, idx) => {\n  const rtype = String(m.type).toLowerCase() === 'image' ? 'image' : 'video';\n  const folder = `instaops-v2/${safePost}`;\n  const publicId = `item_${idx}_${sourceId}`;\n  const toSign = `folder=${folder}&public_id=${publicId}&timestamp=${ts}${apiSecret}`;\n  return {\n    json: {\n      uploadOk: true,\n      post_uuid: postUuid,\n      post_id: ctx.post_id,\n      execution_id: ctx.execution_id,\n      request_id: ctx.request_id,\n      media_index: idx,\n      media_type: mediaType,\n      item_media_type: rtype === 'image' ? 'IMAGE' : 'VIDEO',\n      resource_type: rtype,\n      source_url: String(m.url || ''),\n      source_expires_at: String(m.expiresAt || ''),\n      cloud_name: cloudName,\n      api_key: apiKey,\n      timestamp: String(ts),\n      folder,\n      public_id: publicId,\n      signature: sha1Hex(toSign),\n      canonical_url: String(res.canonicalUrl || ctx.source_instagram_url),\n      source_id: String(res.sourceId || sourceId),\n      source_username: String(res.sourceUsername || ''),\n      source_kind: String(res.kind || ''),\n      original_caption: String(res.caption || ''),\n      caption_status: String(res.captionStatus || (res.caption ? 'available' : 'empty')),\n      caption_source: String(res.captionSource || 'structured'),\n      hashtags: Array.isArray(res.hashtags) ? res.hashtags : [],\n      mentions: Array.isArray(res.mentions) ? res.mentions : [],\n      media_count: mediaCount,\n      image_count: imageCount,\n      video_count: videoCount,\n      source_published_at: meta.publishedAt || null,\n      source_like_count: meta.likeCount ?? null,\n      source_comment_count: meta.commentCount ?? null,\n      source_play_count: meta.playCount ?? null,\n      source_metadata: meta\n    }\n  };\n});"
-      }
-    },
-    {
-      "id": "w01-if-dl-ok",
-      "name": "IF | Downloader Succeeded",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2,
-      "position": [1680, 200],
-      "parameters": {
-        "conditions": {
-          "boolean": [{ "value1": "={{ $json.uploadOk }}", "value2": true }]
-        }
-      }
-    },
-    {
-      "id": "w01-upload-cloudinary",
-      "name": "HTTP | Upload Media to Cloudinary",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "continueOnFail": true,
-      "position": [1900, 120],
-      "parameters": {
-        "method": "POST",
-        "url": "={{ 'https://api.cloudinary.com/v1_1/' + $json.cloud_name + '/' + $json.resource_type + '/upload' }}",
-        "sendBody": true,
-        "contentType": "form-urlencoded",
-        "bodyParameters": {
-          "parameters": [
-            { "name": "file", "value": "={{ $json.source_url }}" },
-            { "name": "folder", "value": "={{ $json.folder }}" },
-            { "name": "public_id", "value": "={{ $json.public_id }}" },
-            { "name": "timestamp", "value": "={{ $json.timestamp }}" },
-            { "name": "api_key", "value": "={{ $json.api_key }}" },
-            { "name": "signature", "value": "={{ $json.signature }}" }
-          ]
-        },
-        "options": { "timeout": 90000 }
-      }
-    },
-    {
-      "id": "w01-build-supabase-payload",
-      "name": "CODE | Build Supabase Draft & MediaAssets",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [2120, 120],
-      "parameters": {
-        "jsCode": "const prepItems = $('CODE | Parse Downloader & Sign Cloudinary').all();\nconst uploadItems = $input.all();\nconst now = new Date().toISOString();\nconst assets = [];\nlet firstSecureUrl = '';\nlet totalBytes = 0;\nlet uploadError = '';\n\nfor (let i = 0; i < uploadItems.length; i++) {\n  const up = uploadItems[i].json || {};\n  const prep = (prepItems[i] && prepItems[i].json) || prepItems[0].json;\n  if (up.error || !up.secure_url || !up.public_id) {\n    uploadError = String(up.error?.message || up.error || 'Cloudinary upload missing secure_url or public_id');\n    break;\n  }\n  if (!firstSecureUrl) firstSecureUrl = String(up.secure_url);\n  const bytes = Number(up.bytes || 0);\n  totalBytes += Number.isFinite(bytes) ? bytes : 0;\n  assets.push({\n    internal_asset_id: `ast_${prep.post_id}_${prep.media_index}`,\n    post_uuid: prep.post_uuid,\n    post_id: prep.post_id,\n    media_index: prep.media_index,\n    media_type: prep.item_media_type,\n    source_expires_at: prep.source_expires_at || null,\n    cloudinary_public_id: String(up.public_id),\n    cloudinary_asset_id: String(up.asset_id || ''),\n    secure_url: String(up.secure_url),\n    thumbnail_url: String(up.secure_url),\n    resource_type: String(up.resource_type || prep.resource_type),\n    delivery_type: 'upload',\n    format: String(up.format || ''),\n    file_size_bytes: bytes,\n    width: up.width ?? null,\n    height: up.height ?? null,\n    duration: up.duration ?? null,\n    storage_status: 'ACTIVE'\n  });\n}\n\nconst head = prepItems[0].json;\nreturn [{\n  json: {\n    success: !uploadError,\n    post_uuid: head.post_uuid,\n    post_id: head.post_id,\n    postPatch: {\n      media_url: firstSecureUrl,\n      media_type: head.media_type,\n      original_caption: head.original_caption,\n      caption: head.original_caption,\n      status: uploadError ? 'FAILED' : 'DRAFT',\n      canonical_url: head.canonical_url,\n      source_id: head.source_id,\n      source_username: head.source_username,\n      source_kind: head.source_kind,\n      caption_status: head.caption_status,\n      caption_source: head.caption_source,\n      hashtags: head.hashtags,\n      mentions: head.mentions,\n      media_count: head.media_count,\n      image_count: head.image_count,\n      video_count: head.video_count,\n      source_published_at: head.source_published_at,\n      source_like_count: head.source_like_count,\n      source_comment_count: head.source_comment_count,\n      source_play_count: head.source_play_count,\n      source_metadata: head.source_metadata,\n      file_size_bytes: totalBytes,\n      revision: (Number($('CODE | Validate & Safeguard').item.json.expected_revision) || 1) + 1,\n      approved_revision: null,\n      extracted_at: now,\n      uploaded_at: now,\n      processed_at: now,\n      sheets_sync_status: 'PENDING',\n      error: uploadError,\n      error_code: uploadError ? 'CLOUDINARY_UPLOAD_FAILED' : '',\n      error_stage: uploadError ? 'UPLOADING_MEDIA' : '',\n      execution_id: head.execution_id,\n      request_id: head.request_id\n    },\n    assets\n  }\n}];"
-      }
-    },
-    {
-      "id": "w01-sb-update-post",
-      "name": "SUPABASE | Update Post Draft",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [2340, 120],
-      "parameters": {
-        "method": "PATCH",
-        "url": "={{ ($env.SUPABASE_URL || 'https://cdgwdlhesgcxmswsamrj.supabase.co').replace(/\\/$/, '') + '/rest/v1/instaops_posts?post_id=eq.' + encodeURIComponent($json.post_id) }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY || '' }}" },
-            { "name": "Authorization", "value": "={{ 'Bearer ' + ($env.SUPABASE_SERVICE_ROLE_KEY || '') }}" },
-            { "name": "Prefer", "value": "return=representation" }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify($json.postPatch) }}",
-        "options": { "timeout": 15000 }
-      }
-    },
-    {
-      "id": "w01-sb-upsert-assets",
-      "name": "SUPABASE | Upsert Relational MediaAssets",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [2560, 120],
-      "parameters": {
-        "method": "POST",
-        "url": "={{ ($env.SUPABASE_URL || 'https://cdgwdlhesgcxmswsamrj.supabase.co').replace(/\\/$/, '') + '/rest/v1/instaops_media_assets?on_conflict=post_uuid,media_index' }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY || '' }}" },
-            { "name": "Authorization", "value": "={{ 'Bearer ' + ($env.SUPABASE_SERVICE_ROLE_KEY || '') }}" },
-            { "name": "Prefer", "value": "resolution=merge-duplicates,return=representation" }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify($('CODE | Build Supabase Draft & MediaAssets').item.json.assets) }}",
-        "options": { "timeout": 20000 }
-      }
-    },
-    {
-      "id": "w01-sync-sheets",
-      "name": "SHEETS | Reporting Upsert By Permanent ID",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
-      "continueOnFail": true,
-      "position": [2780, 120],
-      "credentials": {
-        "googleSheetsOAuth2Api": { "id": "CONFIGURE_IN_N8N", "name": "Google Sheets OAuth2" }
-      },
-      "parameters": {
-        "operation": "appendOrUpdate",
-        "documentId": { "mode": "id", "value": "={{ $env.GOOGLE_SHEET_ID || '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs' }}" },
-        "sheetName": { "mode": "name", "value": "Posts" },
-        "columns": {
-          "mappingMode": "defineBelow",
-          "value": {
-            "post_id": "={{ $('CODE | Build Supabase Draft & MediaAssets').item.json.post_id }}",
-            "post_uuid": "={{ $('CODE | Build Supabase Draft & MediaAssets').item.json.post_uuid }}",
-            "media_url": "={{ $('CODE | Build Supabase Draft & MediaAssets').item.json.postPatch.media_url }}",
-            "media_type": "={{ $('CODE | Build Supabase Draft & MediaAssets').item.json.postPatch.media_type }}",
-            "original_caption": "={{ $('CODE | Build Supabase Draft & MediaAssets').item.json.postPatch.original_caption }}",
-            "caption": "={{ $('CODE | Build Supabase Draft & MediaAssets').item.json.postPatch.caption }}",
-            "status": "={{ $('CODE | Build Supabase Draft & MediaAssets').item.json.postPatch.status }}",
-            "media_count": "={{ String($('CODE | Build Supabase Draft & MediaAssets').item.json.postPatch.media_count) }}",
-            "processed_at": "={{ $('CODE | Build Supabase Draft & MediaAssets').item.json.postPatch.processed_at }}"
-          },
-          "matchingColumns": ["post_id"]
-        }
-      }
-    },
-    {
-      "id": "w01-sb-mark-failed",
-      "name": "SUPABASE | Mark Extract FAILED",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [1900, 340],
-      "parameters": {
-        "method": "PATCH",
-        "url": "={{ ($env.SUPABASE_URL || 'https://cdgwdlhesgcxmswsamrj.supabase.co').replace(/\\/$/, '') + '/rest/v1/instaops_posts?post_id=eq.' + encodeURIComponent($json.post_id) }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY || '' }}" },
-            { "name": "Authorization", "value": "={{ 'Bearer ' + ($env.SUPABASE_SERVICE_ROLE_KEY || '') }}" }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ status: 'FAILED', error: $json.error_message, error_code: $json.error_code, error_stage: 'FETCHING_SOURCE' }) }}",
-        "options": { "timeout": 15000 }
+        "jsCode": "// Safeguard marker: INSTAOPS_V2_EXTRACT — atomic lock transfer, strict downloader validation, partial Cloudinary checkpoints, transactional finalization of instaops_posts and instaops_media_assets to DRAFT.\nreturn (async function () {\n  var self = this;\n  function readCfg(key, fallback) {\n    var blocked = false;\n    try {\n      if (typeof $env !== 'undefined' && $env && $env[key] !== undefined && $env[key] !== null && $env[key] !== '') {\n        return { value: String($env[key]), source: 'env', blocked: false };\n      }\n    } catch (_) { blocked = true; }\n    try {\n      if (typeof $vars !== 'undefined' && $vars && $vars[key] !== undefined && $vars[key] !== null && $vars[key] !== '') {\n        return { value: String($vars[key]), source: 'vars', blocked: blocked };\n      }\n    } catch (_) {}\n    return { value: fallback || '', source: fallback ? 'default' : 'missing', blocked: blocked };\n  }\n\n  async function httpCall(opts) {\n    if (self && self.helpers && typeof self.helpers.httpRequest === 'function') {\n      return await self.helpers.httpRequest(opts);\n    }\n    if (typeof fetch === 'function') {\n      var headers = Object.assign({}, opts.headers || {});\n      var body;\n      if (opts.body !== undefined) {\n        if (typeof opts.body === 'string') {\n          body = opts.body;\n        } else {\n          headers['Content-Type'] = headers['Content-Type'] || 'application/json';\n          body = JSON.stringify(opts.body);\n        }\n      }\n      var res = await fetch(opts.url, { method: opts.method || 'GET', headers: headers, body: body });\n      var text = await res.text();\n      var parsed = text;\n      try { parsed = text ? JSON.parse(text) : {}; } catch (_) {}\n      return { statusCode: res.status, body: parsed, headers: {} };\n    }\n    throw new Error('No HTTP request helper available.');\n  }\n\n  function sha1Hex(str) {\n    function rotl(n, s) { return (n << s) | (n >>> (32 - s)); }\n    var utf8 = unescape(encodeURIComponent(str));\n    var words = [];\n    for (var i = 0; i < utf8.length; i++) {\n      words[i >> 2] = (words[i >> 2] || 0) | ((utf8.charCodeAt(i) & 0xff) << (24 - (i % 4) * 8));\n    }\n    words[utf8.length >> 2] = (words[utf8.length >> 2] || 0) | (0x80 << (24 - (utf8.length % 4) * 8));\n    words[((utf8.length + 8) >> 6 << 4) + 15] = utf8.length * 8;\n    var h0 = 0x67452301, h1 = 0xefcdab89, h2 = 0x98badcfe, h3 = 0x10325476, h4 = 0xc3d2e1f0;\n    var w = new Array(80);\n    for (var i = 0; i < words.length; i += 16) {\n      var a = h0, b = h1, c = h2, d = h3, e = h4;\n      for (var t = 0; t < 80; t++) {\n        w[t] = t < 16 ? (words[i + t] || 0) : rotl(w[t - 3] ^ w[t - 8] ^ w[t - 14] ^ w[t - 16], 1);\n        var f = t < 20 ? ((b & c) | ((~b) & d)) + 0x5a827999\n          : t < 40 ? (b ^ c ^ d) + 0x6ed9eba1\n          : t < 60 ? ((b & c) | (b & d) | (c & d)) + 0x8f1bbcdc\n          : (b ^ c ^ d) + 0xca62c1d6;\n        var temp = (rotl(a, 5) + f + e + w[t]) >>> 0;\n        e = d; d = c; c = rotl(b, 30) >>> 0; b = a; a = temp;\n      }\n      h0 = (h0 + a) >>> 0; h1 = (h1 + b) >>> 0; h2 = (h2 + c) >>> 0; h3 = (h3 + d) >>> 0; h4 = (h4 + e) >>> 0;\n    }\n    return [h0, h1, h2, h3, h4].map(function (n) { return n.toString(16).padStart(8, '0'); }).join('');\n  }\n\n  function isSafeHttpsRemoteUrl(raw) {\n    try {\n      var u = new URL(String(raw || '').trim());\n      if (u.protocol !== 'https:') return false;\n      var h = u.hostname.toLowerCase();\n      if (!h || h === 'localhost' || h.endsWith('.local') || h.endsWith('.internal')) return false;\n      if (/^(127\\.|10\\.|192\\.168\\.|169\\.254\\.|172\\.(1[6-9]|2\\d|3[01])\\.)/.test(h)) return false;\n      return true;\n    } catch (_) { return false; }\n  }\n\n  function safeSlug(val) {\n    return String(val || 'item').replace(/[^A-Za-z0-9_-]+/g, '_').slice(0, 48);\n  }\n\n  function extractTags(caption, prefix) {\n    if (!caption) return [];\n    var out = [];\n    var parts = String(caption).split(/\\s+/);\n    for (var i = 0; i < parts.length; i++) {\n      var p = parts[i];\n      if (p.startsWith(prefix) && p.length > 1) {\n        var clean = prefix + p.slice(1).replace(/[^A-Za-z0-9_.]/g, '');\n        if (clean.length > 1 && out.indexOf(clean) === -1) out.push(clean);\n      }\n    }\n    return out.slice(0, 30);\n  }\n\n  var req = $('CODE | Validate & Safeguard').item.json;\n  var sbUrlCfg = readCfg('SUPABASE_URL', 'https://cdgwdlhesgcxmswsamrj.supabase.co');\n  var sbKeyCfg = readCfg('SUPABASE_SERVICE_ROLE_KEY', '');\n  var dlUrlCfg = readCfg('DOWNLOADER_BASE_URL', 'https://instagram-downloader-psi-one.vercel.app');\n  var dlKeyCfg = readCfg('DOWNLOADER_API_KEY', '');\n  var cldNameCfg = readCfg('CLOUDINARY_CLOUD_NAME', 'djkkknb9k');\n  var cldKeyCfg = readCfg('CLOUDINARY_API_KEY', '');\n  var cldSecretCfg = readCfg('CLOUDINARY_API_SECRET', '');\n\n  var sbUrl = sbUrlCfg.value.replace(/\\/$/, '');\n  var sbKey = sbKeyCfg.value;\n  var dlUrl = dlUrlCfg.value.replace(/\\/$/, '');\n  var dlKey = dlKeyCfg.value;\n  var cloudName = cldNameCfg.value;\n  var cldApiKey = cldKeyCfg.value;\n  var cldApiSecret = cldSecretCfg.value;\n\n  if (!sbKey || !dlKey || !cldApiKey || !cldApiSecret) {\n    var anyBlocked = sbKeyCfg.blocked || dlKeyCfg.blocked || cldKeyCfg.blocked || cldSecretCfg.blocked;\n    return [{ json: { ok: false, error: anyBlocked ? 'n8n $env/secret access denied; configure N8N_BLOCK_ENV_ACCESS_IN_NODE=false or $vars.' : 'Missing required Supabase/Downloader/Cloudinary secrets in n8n.' } }];\n  }\n\n  var sbHeaders = { apikey: sbKey, Authorization: 'Bearer ' + sbKey, 'Content-Type': 'application/json' };\n  async function sbRpc(fnName, params) {\n    return await httpCall({ method: 'POST', url: sbUrl + '/rest/v1/rpc/' + fnName, headers: sbHeaders, body: params, json: true, returnFullResponse: true, ignoreHttpStatusErrors: true, timeout: 20000 });\n  }\n  async function sbRest(method, path, body, extraHeaders) {\n    return await httpCall({ method: method, url: sbUrl + '/rest/v1/' + path, headers: Object.assign({}, sbHeaders, extraHeaders || {}), body: body, json: true, returnFullResponse: true, ignoreHttpStatusErrors: true, timeout: 20000 });\n  }\n\n  var workerOwner = 'w01:' + (req.execution_id || req.request_id || Date.now());\n  var lockRes = await sbRpc('instaops_transfer_or_claim_lock', {\n    p_lock_key: req.lock_key,\n    p_post_uuid: req.post_uuid,\n    p_post_id: req.post_id,\n    p_operation: 'EXTRACT',\n    p_expected_owner: req.lock_owner || '',\n    p_new_owner: workerOwner,\n    p_request_id: req.request_id,\n    p_lease_seconds: 600\n  });\n  var lockRows = Array.isArray(lockRes.body) ? lockRes.body : [lockRes.body];\n  var lockRow = lockRows[0] || {};\n  if (lockRes.statusCode >= 300 || lockRow.acquired !== true) {\n    if (req.job_id) {\n      await sbRest('PATCH', 'instaops_jobs?job_id=eq.' + encodeURIComponent(req.job_id), {\n        status: 'FAILED', stage: 'LOCK_CONFLICT', execution_id: req.execution_id,\n        error_code: 'POST_LOCKED', error_message: String(lockRow.reason || 'Lock owned by another active worker'), finished_at: new Date().toISOString()\n      });\n    }\n    return [{ json: { ok: false, post_uuid: req.post_uuid, post_id: req.post_id, error: String(lockRow.reason || 'Lock acquisition failed') } }];\n  }\n\n  var uploadedAssets = [];\n  var postRow = null;\n  var execStartedMs = Date.now();\n  var releaseLockOnFail = true;\n\n  async function failCleanly(errCode, errStage, errMsg, metadataPatch) {\n    var patch = Object.assign({\n      status: 'FAILED',\n      error: String(errMsg || 'Extraction failed').slice(0, 500),\n      error_code: errCode || 'EXTRACTION_FAILED',\n      error_stage: errStage || 'EXTRACTION'\n    }, metadataPatch || {});\n\n    var finRes = await sbRpc('instaops_finalize_extraction', {\n      p_post_uuid: req.post_uuid,\n      p_post_patch: patch,\n      p_assets: uploadedAssets,\n      p_job_id: req.job_id || '',\n      p_request_id: req.request_id || '',\n      p_execution_id: req.execution_id || '',\n      p_lock_key: releaseLockOnFail ? req.lock_key : '',\n      p_lock_owner: releaseLockOnFail ? workerOwner : ''\n    });\n    await sbRest('POST', 'instaops_execution_logs', {\n      log_id: 'log_' + Date.now() + '_' + safeSlug(req.post_id),\n      request_id: req.request_id, execution_id: req.execution_id,\n      workflow_id: 'w01-extract', workflow_name: 'W01 Extract & Upload',\n      post_id: req.post_id, operation: 'EXTRACT', trigger_source: 'DASHBOARD',\n      stage: errStage || 'FAILED', status: 'FAILED',\n      started_at: req.started_at, finished_at: new Date().toISOString(), duration_ms: Date.now() - execStartedMs,\n      error_code: errCode, error_message: errMsg, retryable: true\n    });\n    return [{ json: { ok: false, post_uuid: req.post_uuid, post_id: req.post_id, status: 'FAILED', error_code: errCode, error: errMsg, partial_assets: uploadedAssets.length, rpc_status: finRes.statusCode } }];\n  }\n\n  try {\n    var postGet = await sbRest('GET', 'instaops_posts?id=eq.' + encodeURIComponent(req.post_uuid) + '&deleted_at=is.null&select=*');\n    postRow = Array.isArray(postGet.body) ? postGet.body[0] : null;\n    if (!postRow) {\n      await sbRpc('instaops_release_lock', { p_lock_key: req.lock_key, p_owner_id: workerOwner });\n      return [{ json: { ok: false, error: 'Active post not found for post_uuid ' + req.post_uuid } }];\n    }\n    if (['PUBLISHED', 'PUBLISHING', 'VERIFY_MANUALLY', 'DELETED', 'ARCHIVED', 'DELETING'].indexOf(postRow.status) !== -1) {\n      await sbRpc('instaops_release_lock', { p_lock_key: req.lock_key, p_owner_id: workerOwner });\n      return [{ json: { ok: false, error: 'Post status ' + postRow.status + ' blocks extraction.' } }];\n    }\n\n    if (req.job_id) {\n      await sbRest('PATCH', 'instaops_jobs?job_id=eq.' + encodeURIComponent(req.job_id), {\n        status: 'RUNNING', stage: 'FETCHING_SOURCE', execution_id: req.execution_id, lock_key: req.lock_key, lock_owner: workerOwner\n      });\n    }\n    await sbRest('PATCH', 'instaops_posts?id=eq.' + encodeURIComponent(req.post_uuid), {\n      status: 'EXTRACTING', execution_id: req.execution_id, request_id: req.request_id, error: '', error_code: '', error_stage: ''\n    });\n\n    var dlRes;\n    try {\n      dlRes = await httpCall({\n        method: 'POST',\n        url: dlUrl + '/api/n8n/resolve',\n        headers: { Authorization: 'Bearer ' + dlKey, 'Content-Type': 'application/json' },\n        body: { url: req.source_instagram_url, post_id: req.post_id, post_uuid: req.post_uuid },\n        json: true, returnFullResponse: true, ignoreHttpStatusErrors: true, timeout: 45000\n      });\n    } catch (dlNetErr) {\n      return await failCleanly('DOWNLOADER_UNAVAILABLE', 'FETCHING_SOURCE', dlNetErr && dlNetErr.message ? dlNetErr.message : 'Downloader request failed');\n    }\n\n    var dl = dlRes.body || {};\n    if (dlRes.statusCode === 429) {\n      return await failCleanly('UPSTREAM_RATE_LIMIT', 'FETCHING_SOURCE', dl.error || 'Downloader upstream rate limit reached');\n    }\n    if (dlRes.statusCode >= 300 || dl.ok !== true || String(dl.status || '').toLowerCase() !== 'ready') {\n      return await failCleanly('DOWNLOADER_NOT_READY', 'FETCHING_SOURCE', dl.error || ('Downloader returned status ' + String(dl.status || dlRes.statusCode) + ' (ok=' + String(dl.ok) + ')'));\n    }\n\n    var rawItems = Array.isArray(dl.media) ? dl.media : Array.isArray(dl.items) ? dl.items : Array.isArray(dl.assets) ? dl.assets : [];\n    if (!rawItems.length && (dl.mediaUrl || dl.downloadUrl || dl.url)) {\n      rawItems = [{ url: dl.mediaUrl || dl.downloadUrl || dl.url, type: dl.mediaType || dl.kind || postRow.media_type, expiresAt: dl.expiresAt || dl.expires_at || '' }];\n    }\n    if (rawItems.length < 1 || rawItems.length > 10) {\n      return await failCleanly('INVALID_MEDIA_COUNT', 'VALIDATING_MEDIA', 'Downloader returned ' + rawItems.length + ' items (must be 1-10).');\n    }\n\n    var nowMs = Date.now();\n    for (var m = 0; m < rawItems.length; m++) {\n      var it = rawItems[m] || {};\n      var mediaRemoteUrl = String(it.url || it.downloadUrl || it.media_url || it.secure_url || '').trim();\n      if (!isSafeHttpsRemoteUrl(mediaRemoteUrl)) {\n        return await failCleanly('SSRF_BLOCKED', 'VALIDATING_MEDIA', 'Item ' + m + ' has unsafe or non-HTTPS remote URL.');\n      }\n      var expRaw = String(it.expiresAt || it.expires_at || dl.expiresAt || '').trim();\n      if (expRaw) {\n        var expMs = Date.parse(expRaw);\n        if (Number.isFinite(expMs) && expMs <= nowMs) {\n          return await failCleanly('MEDIA_URL_EXPIRED', 'VALIDATING_MEDIA', 'Downloader temporary URL for item ' + m + ' already expired at ' + expRaw + '.');\n        }\n      }\n    }\n\n    await sbRpc('instaops_renew_lock', { p_lock_key: req.lock_key, p_owner_id: workerOwner, p_lease_seconds: 600 });\n    if (req.job_id) {\n      await sbRest('PATCH', 'instaops_jobs?job_id=eq.' + encodeURIComponent(req.job_id), { stage: 'UPLOADING_MEDIA' });\n    }\n    await sbRest('PATCH', 'instaops_posts?id=eq.' + encodeURIComponent(req.post_uuid), { status: 'UPLOADING' });\n\n    var sourceId = String(dl.sourceId || dl.source_id || dl.shortcode || postRow.source_id || '');\n    var totalBytes = 0;\n    var imgCount = 0;\n    var vidCount = 0;\n\n    for (var idx = 0; idx < rawItems.length; idx++) {\n      if (idx > 0 && idx % 3 === 0) {\n        await sbRpc('instaops_renew_lock', { p_lock_key: req.lock_key, p_owner_id: workerOwner, p_lease_seconds: 600 });\n      }\n      var itemObj = rawItems[idx] || {};\n      var srcUrl = String(itemObj.url || itemObj.downloadUrl || itemObj.media_url || itemObj.secure_url || '').trim();\n      var rawKind = String(itemObj.type || itemObj.media_type || itemObj.kind || dl.mediaType || postRow.media_type || '').toUpperCase();\n      var isVideo = rawKind.indexOf('VIDEO') !== -1 || rawKind.indexOf('REEL') !== -1 || /\\.mp4(\\?|$)/i.test(srcUrl);\n      var assetMediaType = isVideo ? 'VIDEO' : 'IMAGE';\n      var resType = isVideo ? 'video' : 'image';\n      var publicId = 'instaops-v2/' + safeSlug(req.post_id) + '/item_' + idx + '_' + (sourceId ? safeSlug(sourceId) : 'src');\n      var ts = String(Math.floor(Date.now() / 1000));\n      var toSign = 'public_id=' + publicId + '&timestamp=' + ts + cldApiSecret;\n      var signature = sha1Hex(toSign);\n      var formBody = 'file=' + encodeURIComponent(srcUrl)\n        + '&public_id=' + encodeURIComponent(publicId)\n        + '&timestamp=' + encodeURIComponent(ts)\n        + '&api_key=' + encodeURIComponent(cldApiKey)\n        + '&signature=' + encodeURIComponent(signature);\n\n      var upRes;\n      try {\n        upRes = await httpCall({\n          method: 'POST',\n          url: 'https://api.cloudinary.com/v1_1/' + encodeURIComponent(cloudName) + '/' + resType + '/upload',\n          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },\n          body: formBody,\n          json: false,\n          returnFullResponse: true,\n          ignoreHttpStatusErrors: true,\n          timeout: 90000\n        });\n      } catch (upErr) {\n        return await failCleanly('CLOUDINARY_UPLOAD_FAILED', 'UPLOADING_MEDIA', 'Upload failed at item ' + idx + ' (' + uploadedAssets.length + ' prior checkpointed): ' + (upErr && upErr.message ? upErr.message : 'network error'));\n      }\n\n      var upBody = typeof upRes.body === 'string' ? (function () { try { return JSON.parse(upRes.body); } catch (_) { return {}; } })() : (upRes.body || {});\n      if (upRes.statusCode >= 300 || upBody.error || !upBody.secure_url || !upBody.public_id) {\n        var errMsg = upBody.error && upBody.error.message ? upBody.error.message : ('Cloudinary upload failed at index ' + idx + ' (HTTP ' + upRes.statusCode + ')');\n        return await failCleanly('CLOUDINARY_UPLOAD_FAILED', 'UPLOADING_MEDIA', errMsg + ' (' + uploadedAssets.length + ' prior checkpointed)');\n      }\n\n      if (!String(upBody.secure_url).startsWith('https://res.cloudinary.com/' + cloudName + '/')) {\n        return await failCleanly('SSRF_BLOCKED', 'UPLOADING_MEDIA', 'Cloudinary returned unexpected host for asset ' + idx);\n      }\n\n      var fSize = Number(upBody.bytes || itemObj.fileSizeBytes || 0) || 0;\n      totalBytes += fSize;\n      if (isVideo) vidCount++; else imgCount++;\n      uploadedAssets.push({\n        internal_asset_id: 'ast_' + req.post_id + '_' + idx,\n        media_index: idx,\n        media_type: assetMediaType,\n        resource_type: resType,\n        delivery_type: String(upBody.type || 'upload'),\n        source_expires_at: String(itemObj.expiresAt || itemObj.expires_at || ''),\n        cloudinary_public_id: String(upBody.public_id),\n        cloudinary_asset_id: String(upBody.asset_id || ''),\n        secure_url: String(upBody.secure_url),\n        thumbnail_url: String(itemObj.thumbnailUrl || itemObj.thumbnail_url || (isVideo ? String(upBody.secure_url).replace(/\\.mp4(\\?.*)?$/i, '.jpg') : upBody.secure_url)),\n        format: String(upBody.format || (isVideo ? 'mp4' : 'jpg')),\n        file_size_bytes: fSize,\n        width: upBody.width || null,\n        height: upBody.height || null,\n        duration: upBody.duration || itemObj.duration || null,\n        storage_status: 'ACTIVE',\n        error: ''\n      });\n    }\n\n    var rawCaption = String(dl.caption || dl.text || '');\n    var captionStatus = rawCaption ? 'available' : String(dl.captionStatus || dl.caption_status || (dl.caption === '' ? 'empty' : 'unavailable'));\n    var effectiveCaption = String(postRow.caption || '').trim() ? String(postRow.caption) : rawCaption;\n    var resolvedMediaType = uploadedAssets.length > 1 ? 'CAROUSEL' : (uploadedAssets[0].media_type === 'IMAGE' ? 'IMAGE' : 'REEL');\n    var nowIso = new Date().toISOString();\n\n    await sbRpc('instaops_renew_lock', { p_lock_key: req.lock_key, p_owner_id: workerOwner, p_lease_seconds: 300 });\n    var postPatch = {\n      status: 'DRAFT',\n      media_url: uploadedAssets[0].secure_url,\n      media_type: resolvedMediaType,\n      original_caption: rawCaption,\n      caption: effectiveCaption,\n      caption_status: captionStatus,\n      caption_source: String(dl.captionSource || dl.caption_source || (rawCaption ? 'structured' : 'none')),\n      canonical_url: String(dl.canonicalUrl || dl.canonical_url || req.source_instagram_url),\n      source_id: sourceId,\n      source_username: String(dl.username || dl.sourceUsername || dl.ownerUsername || ''),\n      source_kind: String(dl.sourceKind || dl.source_kind || ''),\n      hashtags: Array.isArray(dl.hashtags) ? dl.hashtags : extractTags(rawCaption, '#'),\n      mentions: Array.isArray(dl.mentions) ? dl.mentions : extractTags(rawCaption, '@'),\n      media_count: uploadedAssets.length,\n      image_count: imgCount,\n      video_count: vidCount,\n      source_published_at: dl.publishedAt || dl.source_published_at || '',\n      source_like_count: dl.likeCount !== undefined ? dl.likeCount : '',\n      source_comment_count: dl.commentCount !== undefined ? dl.commentCount : '',\n      source_play_count: dl.playCount !== undefined ? dl.playCount : '',\n      source_metadata: dl.metadata || {},\n      file_size_bytes: totalBytes,\n      extracted_at: nowIso,\n      uploaded_at: nowIso,\n      error: '',\n      error_code: '',\n      error_stage: ''\n    };\n\n    var fin = await sbRpc('instaops_finalize_extraction', {\n      p_post_uuid: req.post_uuid,\n      p_post_patch: postPatch,\n      p_assets: uploadedAssets,\n      p_job_id: req.job_id || '',\n      p_request_id: req.request_id || '',\n      p_execution_id: req.execution_id || '',\n      p_lock_key: req.lock_key,\n      p_lock_owner: workerOwner\n    });\n    if (fin.statusCode >= 300) {\n      throw new Error('instaops_finalize_extraction RPC failed (HTTP ' + fin.statusCode + ')');\n    }\n\n    await sbRest('POST', 'instaops_execution_logs', {\n      log_id: 'log_' + Date.now() + '_' + safeSlug(req.post_id),\n      request_id: req.request_id, execution_id: req.execution_id,\n      workflow_id: 'w01-extract', workflow_name: 'W01 Extract & Upload',\n      post_id: req.post_id, operation: 'EXTRACT', trigger_source: 'DASHBOARD',\n      stage: 'COMPLETED', status: 'SUCCESS',\n      started_at: req.started_at, finished_at: nowIso, duration_ms: Date.now() - execStartedMs,\n      retryable: false\n    });\n    await sbRest('POST', 'instaops_sync_queue', {\n      entity_type: 'EXECUTION_LOG', entity_uuid: req.post_uuid, external_id: 'log_' + safeSlug(req.post_id) + '_' + Date.now(),\n      operation: 'UPSERT', payload: { log_id: 'log_' + Date.now() + '_' + safeSlug(req.post_id), request_id: req.request_id, execution_id: req.execution_id, workflow_id: 'w01-extract', workflow_name: 'W01 Extract & Upload', post_id: req.post_id, operation: 'EXTRACT', trigger_source: 'DASHBOARD', stage: 'COMPLETED', status: 'SUCCESS', started_at: req.started_at, finished_at: nowIso, duration_ms: Date.now() - execStartedMs, retryable: false, created_at: nowIso },\n      idempotency_key: 'log:w01:' + req.post_uuid + ':' + (req.request_id || Date.now()),\n      status: 'PENDING'\n    });\n\n    return [{\n      json: {\n        ok: true,\n        post_uuid: req.post_uuid,\n        post_id: req.post_id,\n        status: 'DRAFT',\n        media_type: resolvedMediaType,\n        uploaded_count: uploadedAssets.length,\n        job_id: req.job_id,\n        execution_id: req.execution_id\n      }\n    }];\n  } catch (err) {\n    return await failCleanly('EXTRACTION_FAILED', 'FINALIZING_EXTRACTION', err && err.message ? err.message : 'Unexpected extraction error');\n  }\n}).call(this);"
       }
     }
   ],
   "connections": {
-    "WEBHOOK | Extract Request": { "main": [[{ "node": "CODE | Validate & Safeguard", "type": "main", "index": 0 }]] },
-    "CODE | Validate & Safeguard": { "main": [[{ "node": "IF | Valid Request", "type": "main", "index": 0 }]] },
+    "WEBHOOK | Extract Request": {
+      "main": [[{ "node": "CODE | Validate & Safeguard", "type": "main", "index": 0 }]]
+    },
+    "CODE | Validate & Safeguard": {
+      "main": [[{ "node": "IF | Valid Request", "type": "main", "index": 0 }]]
+    },
     "IF | Valid Request": {
       "main": [
         [{ "node": "RESPOND | Accepted 202", "type": "main", "index": 0 }],
         [{ "node": "RESPOND | Validation Error", "type": "main", "index": 0 }]
       ]
     },
-    "RESPOND | Accepted 202": { "main": [[{ "node": "SUPABASE | Mark Post EXTRACTING", "type": "main", "index": 0 }]] },
-    "SUPABASE | Mark Post EXTRACTING": { "main": [[{ "node": "HTTP | Resolve Downloader API", "type": "main", "index": 0 }]] },
-    "HTTP | Resolve Downloader API": { "main": [[{ "node": "CODE | Parse Downloader & Sign Cloudinary", "type": "main", "index": 0 }]] },
-    "CODE | Parse Downloader & Sign Cloudinary": { "main": [[{ "node": "IF | Downloader Succeeded", "type": "main", "index": 0 }]] },
-    "IF | Downloader Succeeded": {
-      "main": [
-        [{ "node": "HTTP | Upload Media to Cloudinary", "type": "main", "index": 0 }],
-        [{ "node": "SUPABASE | Mark Extract FAILED", "type": "main", "index": 0 }]
-      ]
-    },
-    "HTTP | Upload Media to Cloudinary": { "main": [[{ "node": "CODE | Build Supabase Draft & MediaAssets", "type": "main", "index": 0 }]] },
-    "CODE | Build Supabase Draft & MediaAssets": { "main": [[{ "node": "SUPABASE | Update Post Draft", "type": "main", "index": 0 }]] },
-    "SUPABASE | Update Post Draft": { "main": [[{ "node": "SUPABASE | Upsert Relational MediaAssets", "type": "main", "index": 0 }]] },
-    "SUPABASE | Upsert Relational MediaAssets": { "main": [[{ "node": "SHEETS | Reporting Upsert By Permanent ID", "type": "main", "index": 0 }]] }
+    "RESPOND | Accepted 202": {
+      "main": [[{ "node": "CODE | Atomic Lock, Download, Upload & Finalize Extraction", "type": "main", "index": 0 }]]
+    }
   }
 }

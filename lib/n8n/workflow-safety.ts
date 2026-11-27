@@ -6,6 +6,7 @@ export interface WorkflowNode {
   type: string;
   typeVersion?: number;
   disabled?: boolean;
+  alwaysOutputData?: boolean;
   retryOnFail?: boolean;
   continueOnFail?: boolean;
   parameters?: Record<string, unknown>;
@@ -28,10 +29,14 @@ export interface WorkflowVerificationResult {
 }
 
 const HARDCODED_SECRET_PATTERNS = [
-  /Bearer\s+(?!\{\{|\$env)[A-Za-z0-9._-]{16,}/i,
+  /Bearer\s+(?!\{\{|\$env|\$vars)[A-Za-z0-9._-]{16,}/i,
   /x-dashboard-secret[^\n]*!==\s*["'][A-Za-z0-9._-]{12,}["']/i,
   /\bEAA[A-Za-z0-9]{20,}\b/,
 ];
+
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as new (
+  ...args: string[]
+) => (...fnArgs: unknown[]) => Promise<unknown>;
 
 function validateGraphBasics(wf: WorkflowJson, label: string, errors: string[]): void {
   if (!wf || typeof wf !== 'object' || !Array.isArray(wf.nodes)) {
@@ -53,7 +58,8 @@ function validateGraphBasics(wf: WorkflowJson, label: string, errors: string[]):
     const js = typeof n.parameters?.jsCode === 'string' ? n.parameters.jsCode : '';
     if (js) {
       try {
-        new Function('$', '$input', '$execution', '$env', js);
+        new Function('$', '$input', '$execution', '$env', '$vars', js);
+        new AsyncFunction('$', '$input', '$execution', '$env', '$vars', js);
       } catch (e) {
         errors.push(`${label}: Syntax error in Code node "${n.name}": ${e instanceof Error ? e.message : String(e)}`);
       }
@@ -82,6 +88,10 @@ function combinedCode(wf: WorkflowJson): string {
     .join('\n');
 }
 
+function hasSheetsNode(wf: WorkflowJson): boolean {
+  return wf.nodes.some((n) => n.type === 'n8n-nodes-base.googleSheets');
+}
+
 export function verifyWorkflowExport(
   role: 'W01' | 'W02' | 'W03' | 'W04' | 'W05',
   wf: WorkflowJson,
@@ -91,6 +101,10 @@ export function verifyWorkflowExport(
   const allCode = combinedCode(wf);
   const serialized = JSON.stringify(wf);
 
+  if (!allCode.includes('readCfg')) {
+    errors.push(`${role}: Code nodes must use safe readCfg ($env/$vars fallback) helper for hosted n8n v2 compatibility.`);
+  }
+
   if (role === 'W01') {
     if (!allCode.includes('INSTAOPS_V2_EXTRACT')) {
       errors.push('W01: Missing INSTAOPS_V2_EXTRACT safeguard marker.');
@@ -98,8 +112,14 @@ export function verifyWorkflowExport(
     if (/media_publish|INSTAGRAM\s*\|/i.test(serialized)) {
       errors.push('W01: Extraction workflow must never contain Instagram publishing nodes.');
     }
+    if (hasSheetsNode(wf)) {
+      errors.push('W01: Must not contain competing direct Google Sheets nodes (outbox sync belongs strictly to W04).');
+    }
     if (!serialized.includes('/api/n8n/resolve')) {
       errors.push('W01: Must integrate with hosted downloader /api/n8n/resolve endpoint.');
+    }
+    if (!serialized.includes('instaops_transfer_or_claim_lock') || !serialized.includes('instaops_finalize_extraction')) {
+      errors.push('W01: Must execute atomic lock transfer and transactional extraction finalization RPCs.');
     }
     if (!serialized.includes('instaops_posts') || !serialized.includes('instaops_media_assets')) {
       errors.push('W01: Must write primary records to Supabase instaops_posts and instaops_media_assets.');
@@ -113,14 +133,26 @@ export function verifyWorkflowExport(
     if (!allCode.includes('INSTAOPS_V2_PUBLISH')) {
       errors.push('W02: Missing INSTAOPS_V2_PUBLISH safeguard marker.');
     }
-    if (!allCode.includes('approved_revision') || !allCode.includes('revision')) {
-      errors.push('W02: Must verify approved_revision === revision before publishing.');
+    if (hasSheetsNode(wf)) {
+      errors.push('W02: Must not contain competing direct Google Sheets nodes (outbox sync belongs strictly to W04).');
+    }
+    if (!allCode.includes('LIVE_PUBLISH_ENABLED')) {
+      errors.push('W02: Must enforce LIVE_PUBLISH_ENABLED inside W02 itself.');
+    }
+    if (!allCode.includes('approved_revision') || !allCode.includes('reviewed_revision') || !allCode.includes('reqRev !== currentRev || approvedRev !== currentRev')) {
+      errors.push('W02: Must verify both reviewed_revision and approved_revision equal DB revision using logical OR rejection.');
+    }
+    if (!serialized.includes('instaops_transfer_or_claim_lock') || !serialized.includes('instaops_renew_lock') || !serialized.includes('instaops_release_lock')) {
+      errors.push('W02: Must use atomic lock transfer, lease renewal, and ownership-checked release.');
     }
     if (!serialized.includes('/media_publish') || !serialized.includes('status_code')) {
       errors.push('W02: Must use explicit Meta Graph API container creation, status_code polling, and media_publish.');
     }
-    if (!serialized.includes('is_carousel_item') || !serialized.includes('CAROUSEL')) {
-      errors.push('W02: Must support complete multi-item Carousel Graph API child & parent containers.');
+    if (!serialized.includes('is_carousel_item') || !serialized.includes('CAROUSEL') || !allCode.includes('ig_child_container_id')) {
+      errors.push('W02: Must support complete 2-10 Carousel Graph API child & parent containers with persisted container IDs.');
+    }
+    if (!allCode.includes('VERIFY_MANUALLY') || !allCode.includes('PUBLISH_OUTCOME_UNKNOWN')) {
+      errors.push('W02: Must persist uncertain outcomes as VERIFY_MANUALLY + PUBLISH_OUTCOME_UNKNOWN while preserving lock.');
     }
     if (serialized.includes('@mookielianhd/n8n-nodes-instagram')) {
       errors.push('W02: Must not use @mookielianhd/n8n-nodes-instagram opaque community node.');
@@ -135,11 +167,11 @@ export function verifyWorkflowExport(
     if (!sched || sched.disabled !== true) {
       errors.push('W03: Schedule trigger must be disabled by default in exported JSON.');
     }
-    if (!serialized.includes('instaops_posts')) {
-      errors.push('W03: Scheduled runner must read authoritative due queue from Supabase instaops_posts.');
+    if (!serialized.includes('instaops_claim_due_scheduled_posts') || !serialized.includes('instaops_posts')) {
+      errors.push('W03: Scheduled runner must claim due rows atomically via instaops_claim_due_scheduled_posts.');
     }
-    if (!allCode.includes('SCHEDULED') || !allCode.includes('LATER')) {
-      errors.push('W03: Scheduled runner must filter strictly for SCHEDULED + LATER due posts.');
+    if (!allCode.includes('SCHEDULED') || !allCode.includes('LATER') || !allCode.includes('SCHEDULING_ENABLED') || !allCode.includes('LIVE_PUBLISH_ENABLED')) {
+      errors.push('W03: Scheduled runner must filter strictly for SCHEDULED + LATER and enforce SCHEDULING_ENABLED + LIVE_PUBLISH_ENABLED.');
     }
   }
 
@@ -147,11 +179,20 @@ export function verifyWorkflowExport(
     if (!allCode.includes('INSTAOPS_V2_CONTENT')) {
       errors.push('W04: Missing INSTAOPS_V2_CONTENT safeguard marker.');
     }
-    for (const op of ['LIST_POSTS', 'CREATE_POST', 'SYNC_RECORD', 'DELETE_MEDIA', 'DELETE_POST', 'ARCHIVE_POST']) {
+    for (const op of ['LIST_POSTS', 'LIST_MEDIA', 'CREATE_POST', 'UPDATE_POST', 'SCHEDULE_POST', 'CANCEL_SCHEDULE', 'ARCHIVE_POST', 'SYNC_RECORD', 'DELETE_MEDIA', 'DELETE_POST']) {
       if (!allCode.includes(op)) errors.push(`W04: Missing required allowlisted operation ${op}.`);
     }
-    if (!serialized.includes('/destroy')) {
-      errors.push('W04: Missing Cloudinary destroy endpoint for asset deletion.');
+    if (!allCode.includes('LIVE_DELETE_ENABLED') || !serialized.includes('/destroy')) {
+      errors.push('W04: Must enforce LIVE_DELETE_ENABLED and verified Cloudinary /destroy endpoint.');
+    }
+    for (const tab of ['Posts', 'MediaAssets', 'ExecutionLogs', 'Accounts']) {
+      if (!serialized.includes(`"${tab}"`)) {
+        errors.push(`W04: Missing Google Sheets reporting tab "${tab}".`);
+      }
+    }
+    const sheetsReads = wf.nodes.filter((n) => n.type === 'n8n-nodes-base.googleSheets' && n.parameters?.operation === 'read');
+    if (!sheetsReads.length || sheetsReads.some((n) => n.alwaysOutputData !== true)) {
+      errors.push('W04: Google Sheets read nodes must set alwaysOutputData: true so empty sheets do not halt execution.');
     }
   }
 
@@ -159,8 +200,18 @@ export function verifyWorkflowExport(
     if (!allCode.includes('INSTAOPS_V2_RECOVERY')) {
       errors.push('W05: Missing INSTAOPS_V2_RECOVERY safeguard marker.');
     }
-    if (!allCode.includes('CHECK_CONNECTIONS') || !allCode.includes('VERIFY_PUBLICATION')) {
-      errors.push('W05: Must support CHECK_CONNECTIONS and VERIFY_PUBLICATION recovery operations.');
+    if (!allCode.includes('CHECK_CONNECTIONS') || !allCode.includes('VERIFY_PUBLICATION') || !allCode.includes('SAFE_RETRY')) {
+      errors.push('W05: Must support CHECK_CONNECTIONS, VERIFY_PUBLICATION, and SAFE_RETRY recovery operations.');
+    }
+    if (!serialized.includes('instaops_verify_health_and_rpc') || !allCode.includes('n8nEnv')) {
+      errors.push('W05: Must verify Supabase schema+RLS+RPC via instaops_verify_health_and_rpc and surface n8nEnv diagnostics.');
+    }
+    if (!serialized.includes('graph.facebook.com')) {
+      errors.push('W05: VERIFY_PUBLICATION must verify against live Meta Graph API before marking PUBLISHED.');
+    }
+    const sheetsProbe = wf.nodes.find((n) => n.type === 'n8n-nodes-base.googleSheets' && n.parameters?.operation === 'read');
+    if (!sheetsProbe || sheetsProbe.alwaysOutputData !== true) {
+      errors.push('W05: SHEETS probe node must set alwaysOutputData: true for empty worksheet safety.');
     }
   }
 

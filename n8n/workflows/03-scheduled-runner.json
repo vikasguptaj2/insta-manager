@@ -19,60 +19,19 @@
       }
     },
     {
-      "id": "w03-sb-read-scheduled",
-      "name": "SUPABASE | Read Scheduled Due Queue",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [380, 260],
-      "parameters": {
-        "method": "GET",
-        "url": "={{ ($env.SUPABASE_URL || 'https://cdgwdlhesgcxmswsamrj.supabase.co').replace(/\\/$/, '') + '/rest/v1/instaops_posts?status=eq.SCHEDULED&publish_mode=eq.LATER&deleted_at=is.null&select=*,instaops_media_assets(*)&order=publish_at.asc' }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY || '' }}" },
-            { "name": "Authorization", "value": "={{ 'Bearer ' + ($env.SUPABASE_SERVICE_ROLE_KEY || '') }}" }
-          ]
-        },
-        "options": { "timeout": 15000 }
-      }
-    },
-    {
-      "id": "w03-filter-due",
-      "name": "CODE | Filter Due Approved Scheduled Posts",
+      "id": "w03-atomic-runner",
+      "name": "CODE | Atomic Due Claim & Dispatch to W02",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [600, 260],
+      "position": [440, 260],
       "parameters": {
-        "jsCode": "// Safeguard marker: INSTAOPS_V2_SCHEDULE — reads due SCHEDULED + LATER rows (Reels/Images/Carousels) from Supabase.\nif (String($env.SCHEDULING_ENABLED || '').toLowerCase() !== 'true') {\n  return [];\n}\nconst now = Date.now();\nconst rows = $input.all().map(i => i.json || {});\nconst due = [];\n\nfor (const r of rows) {\n  const status = String(r.status || '').toUpperCase();\n  const mode = String(r.publish_mode || '').toUpperCase();\n  const mediaType = String(r.media_type || 'REEL').toUpperCase();\n  const pubMs = Date.parse(String(r.publish_at || ''));\n  if (status !== 'SCHEDULED' || mode !== 'LATER') continue;\n  if (!Number.isFinite(pubMs) || pubMs > now) continue;\n  if (!r.revision || Number(r.approved_revision) !== Number(r.revision)) continue;\n  const activeAssets = (Array.isArray(r.instaops_media_assets) ? r.instaops_media_assets : [])\n    .filter(a => a.storage_status === 'ACTIVE')\n    .sort((a, b) => Number(a.media_index || 0) - Number(b.media_index || 0));\n  if (mediaType === 'CAROUSEL' && (activeAssets.length < 2 || activeAssets.length > 10)) continue;\n  due.push({\n    json: {\n      action: 'PUBLISH',\n      post_uuid: String(r.id),\n      post_id: String(r.post_id),\n      ig_user_id: String(r.ig_user_id || $env.INSTAGRAM_USER_ID || '17841453414532595'),\n      media_type: mediaType,\n      caption: String(r.caption || r.original_caption || ''),\n      media_url: String(r.media_url || ''),\n      media_items: activeAssets,\n      reviewed_revision: String(r.revision),\n      confirm: true,\n      request_id: `sched_${r.post_id}_${Math.floor(now / 60000)}`,\n      job_id: `job_sched_${r.post_id}`\n    }\n  });\n}\n\nreturn due.slice(0, 1);"
-      }
-    },
-    {
-      "id": "w03-trigger-w02",
-      "name": "HTTP | Trigger W02 Publish Webhook",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [840, 260],
-      "parameters": {
-        "method": "POST",
-        "url": "={{ ($env.N8N_BASE_URL || 'https://137.23.61.127.sslip.io').replace(/\\/$/, '') + '/webhook/instaops-publish-v1' }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            { "name": "x-dashboard-secret", "value": "={{ $env.N8N_WEBHOOK_SECRET || '' }}" },
-            { "name": "Content-Type", "value": "application/json" }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify($json) }}",
-        "options": { "timeout": 30000 }
+        "jsCode": "// Safeguard marker: INSTAOPS_V2_SCHEDULE — atomically claims due SCHEDULED + LATER rows (Reels/Images/Carousels) from Supabase instaops_posts via instaops_claim_due_scheduled_posts and hands off canonical lock to W02.\nreturn (async function () {\n  var self = this;\n  function readCfg(key, fallback) {\n    var blocked = false;\n    try {\n      if (typeof $env !== 'undefined' && $env && $env[key] !== undefined && $env[key] !== null && $env[key] !== '') {\n        return { value: String($env[key]), source: 'env', blocked: false };\n      }\n    } catch (_) { blocked = true; }\n    try {\n      if (typeof $vars !== 'undefined' && $vars && $vars[key] !== undefined && $vars[key] !== null && $vars[key] !== '') {\n        return { value: String($vars[key]), source: 'vars', blocked: blocked };\n      }\n    } catch (_) {}\n    return { value: fallback || '', source: fallback ? 'default' : 'missing', blocked: blocked };\n  }\n\n  async function httpCall(opts) {\n    if (self && self.helpers && typeof self.helpers.httpRequest === 'function') {\n      return await self.helpers.httpRequest(opts);\n    }\n    if (typeof fetch === 'function') {\n      var headers = Object.assign({}, opts.headers || {});\n      var body;\n      if (opts.body !== undefined) {\n        headers['Content-Type'] = headers['Content-Type'] || 'application/json';\n        body = typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body);\n      }\n      var res = await fetch(opts.url, { method: opts.method || 'GET', headers: headers, body: body });\n      var text = await res.text();\n      var parsed = text;\n      try { parsed = text ? JSON.parse(text) : {}; } catch (_) {}\n      return { statusCode: res.status, body: parsed, headers: {} };\n    }\n    throw new Error('No HTTP helper available.');\n  }\n\n  var schedCfg = readCfg('SCHEDULING_ENABLED', 'false');\n  var livePubCfg = readCfg('LIVE_PUBLISH_ENABLED', 'false');\n  if (schedCfg.value.toLowerCase() !== 'true' || livePubCfg.value.toLowerCase() !== 'true') {\n    return [];\n  }\n\n  var sbUrlCfg = readCfg('SUPABASE_URL', 'https://cdgwdlhesgcxmswsamrj.supabase.co');\n  var sbKeyCfg = readCfg('SUPABASE_SERVICE_ROLE_KEY', '');\n  var n8nUrlCfg = readCfg('N8N_BASE_URL', 'https://137.23.61.127.sslip.io');\n  var secretCfg = readCfg('N8N_WEBHOOK_SECRET', '');\n  if (!sbKeyCfg.value || !secretCfg.value) {\n    return [{ json: { ok: false, error: (sbKeyCfg.blocked || secretCfg.blocked) ? 'n8n $env/secret access denied; configure N8N_BLOCK_ENV_ACCESS_IN_NODE=false or $vars.' : 'Missing SUPABASE_SERVICE_ROLE_KEY or N8N_WEBHOOK_SECRET.' } }];\n  }\n\n  var sbUrl = sbUrlCfg.value.replace(/\\/$/, '');\n  var sbHeaders = { apikey: sbKeyCfg.value, Authorization: 'Bearer ' + sbKeyCfg.value, 'Content-Type': 'application/json' };\n  var workerId = 'w03:' + String((typeof $execution !== 'undefined' && $execution && $execution.id) || Date.now());\n\n  // Atomic FOR UPDATE SKIP LOCKED claim on SCHEDULED + LATER + due publish_at + approved_revision=revision\n  var claimRes = await httpCall({\n    method: 'POST',\n    url: sbUrl + '/rest/v1/rpc/instaops_claim_due_scheduled_posts',\n    headers: sbHeaders,\n    body: { p_worker_id: workerId, p_limit: 1 },\n    json: true,\n    returnFullResponse: true,\n    ignoreHttpStatusErrors: true,\n    timeout: 20000\n  });\n\n  var claimed = Array.isArray(claimRes.body) ? claimRes.body : [];\n  if (claimRes.statusCode >= 300 || !claimed.length) {\n    return [];\n  }\n\n  var row = claimed[0];\n  var mediaType = String(row.media_type || 'REEL').toUpperCase();\n  var activeAssets = Array.isArray(row.media_items) ? row.media_items : [];\n  if ((mediaType === 'CAROUSEL' && (activeAssets.length < 2 || activeAssets.length > 10)) || Number(row.approved_revision) !== Number(row.revision)) {\n    await httpCall({ method: 'POST', url: sbUrl + '/rest/v1/rpc/instaops_release_lock', headers: sbHeaders, body: { p_lock_key: row.lock_key, p_owner_id: row.lock_owner }, json: true, returnFullResponse: true, ignoreHttpStatusErrors: true });\n    await httpCall({ method: 'PATCH', url: sbUrl + '/rest/v1/instaops_posts?id=eq.' + encodeURIComponent(row.post_uuid), headers: sbHeaders, body: { status: 'FAILED', error_code: 'SCHEDULE_PRECHECK_FAILED', error: 'Invalid carousel assets or revision mismatch on scheduled claim' }, json: true, returnFullResponse: true, ignoreHttpStatusErrors: true });\n    return [];\n  }\n\n  var payload = {\n    action: 'PUBLISH',\n    post_uuid: String(row.post_uuid),\n    post_id: String(row.post_id),\n    ig_user_id: String(row.ig_user_id || readCfg('INSTAGRAM_USER_ID', '17841453414532595').value),\n    media_type: mediaType,\n    caption: String(row.caption || ''),\n    media_url: String(row.media_url || ''),\n    reviewed_revision: String(row.revision),\n    approved_revision: String(row.approved_revision),\n    confirm: true,\n    lock_key: String(row.lock_key),\n    lock_owner: String(row.lock_owner),\n    job_id: String(row.job_id),\n    request_id: String(row.request_id)\n  };\n\n  try {\n    var dispRes = await httpCall({\n      method: 'POST',\n      url: n8nUrlCfg.value.replace(/\\/$/, '') + '/webhook/instaops-publish-v1',\n      headers: { 'x-dashboard-secret': secretCfg.value, 'Content-Type': 'application/json' },\n      body: payload,\n      json: true,\n      returnFullResponse: true,\n      ignoreHttpStatusErrors: true,\n      timeout: 30000\n    });\n    if (dispRes.statusCode >= 200 && dispRes.statusCode < 300 && dispRes.body && dispRes.body.accepted === true) {\n      return [{ json: { ok: true, dispatched: true, post_uuid: row.post_uuid, post_id: row.post_id, lock_key: row.lock_key, job_id: row.job_id, execution_id: dispRes.body.execution_id } }];\n    }\n    if (dispRes.statusCode >= 400 && dispRes.statusCode < 500) {\n      await httpCall({ method: 'PATCH', url: sbUrl + '/rest/v1/instaops_posts?id=eq.' + encodeURIComponent(row.post_uuid), headers: sbHeaders, body: { status: 'READY', error_code: 'SCHEDULE_DISPATCH_REJECTED', error: JSON.stringify(dispRes.body || {}).slice(0, 300) }, json: true, returnFullResponse: true, ignoreHttpStatusErrors: true });\n      await httpCall({ method: 'PATCH', url: sbUrl + '/rest/v1/instaops_jobs?job_id=eq.' + encodeURIComponent(row.job_id), headers: sbHeaders, body: { status: 'FAILED', stage: 'DISPATCH_REJECTED', finished_at: new Date().toISOString() }, json: true, returnFullResponse: true, ignoreHttpStatusErrors: true });\n      await httpCall({ method: 'POST', url: sbUrl + '/rest/v1/rpc/instaops_release_lock', headers: sbHeaders, body: { p_lock_key: row.lock_key, p_owner_id: row.lock_owner }, json: true, returnFullResponse: true, ignoreHttpStatusErrors: true });\n      return [{ json: { ok: false, dispatched: false, status: 'REJECTED', httpStatus: dispRes.statusCode } }];\n    }\n    await httpCall({ method: 'PATCH', url: sbUrl + '/rest/v1/instaops_posts?id=eq.' + encodeURIComponent(row.post_uuid), headers: sbHeaders, body: { status: 'VERIFY_MANUALLY', error_code: 'PUBLISH_OUTCOME_UNKNOWN', error: 'Uncertain scheduled W02 webhook dispatch HTTP ' + dispRes.statusCode }, json: true, returnFullResponse: true, ignoreHttpStatusErrors: true });\n    await httpCall({ method: 'PATCH', url: sbUrl + '/rest/v1/instaops_jobs?job_id=eq.' + encodeURIComponent(row.job_id), headers: sbHeaders, body: { status: 'OUTCOME_UNKNOWN', stage: 'OUTCOME_UNKNOWN' }, json: true, returnFullResponse: true, ignoreHttpStatusErrors: true });\n    return [{ json: { ok: false, dispatched: false, status: 'VERIFY_MANUALLY', lock_preserved: true } }];\n  } catch (netErr) {\n    await httpCall({ method: 'PATCH', url: sbUrl + '/rest/v1/instaops_posts?id=eq.' + encodeURIComponent(row.post_uuid), headers: sbHeaders, body: { status: 'VERIFY_MANUALLY', error_code: 'PUBLISH_OUTCOME_UNKNOWN', error: 'Uncertain scheduled W02 dispatch timeout: ' + (netErr && netErr.message ? netErr.message : '') }, json: true, returnFullResponse: true, ignoreHttpStatusErrors: true });\n    await httpCall({ method: 'PATCH', url: sbUrl + '/rest/v1/instaops_jobs?job_id=eq.' + encodeURIComponent(row.job_id), headers: sbHeaders, body: { status: 'OUTCOME_UNKNOWN', stage: 'OUTCOME_UNKNOWN' }, json: true, returnFullResponse: true, ignoreHttpStatusErrors: true });\n    return [{ json: { ok: false, dispatched: false, status: 'VERIFY_MANUALLY', lock_preserved: true } }];\n  }\n}).call(this);"
       }
     }
   ],
   "connections": {
-    "SCHEDULE | Every 5 Minutes (Disabled By Default)": { "main": [[{ "node": "SUPABASE | Read Scheduled Due Queue", "type": "main", "index": 0 }]] },
-    "SUPABASE | Read Scheduled Due Queue": { "main": [[{ "node": "CODE | Filter Due Approved Scheduled Posts", "type": "main", "index": 0 }]] },
-    "CODE | Filter Due Approved Scheduled Posts": { "main": [[{ "node": "HTTP | Trigger W02 Publish Webhook", "type": "main", "index": 0 }]] }
+    "SCHEDULE | Every 5 Minutes (Disabled By Default)": {
+      "main": [[{ "node": "CODE | Atomic Due Claim & Dispatch to W02", "type": "main", "index": 0 }]]
+    }
   }
 }

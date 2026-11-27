@@ -68,6 +68,12 @@ describe('Supabase migrations, RLS, constraints, transactional RPCs & outbox syn
       const url = typeof input === 'string' ? input : input.toString();
       calls.push(url);
 
+      if (url.includes('/rpc/instaops_verify_health_and_rpc')) {
+        return new Response(
+          JSON.stringify([{ schema_ok: true, rls_ok: true, anon_revoked_ok: true, atomic_rpc_ok: true, active_accounts_count: 1, detail: 'tables=10/10' }]),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
       if (url.includes('/rest/v1/instaops_job_locks') && !url.includes('/rpc/')) {
         return new Response(JSON.stringify([]), { status: 200, headers: { 'content-type': 'application/json' } });
       }
@@ -146,6 +152,12 @@ describe('Supabase migrations, RLS, constraints, transactional RPCs & outbox syn
 
     const mockFetch: typeof fetch = async (input, init) => {
       const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/rpc/instaops_verify_health_and_rpc')) {
+        return new Response(
+          JSON.stringify([{ schema_ok: true, rls_ok: true, anon_revoked_ok: true, atomic_rpc_ok: true, active_accounts_count: 1, detail: 'tables=10/10' }]),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
       if (url.includes('/webhook/instaops-content-v1')) {
         return new Response(JSON.stringify({ ok: false, error: 'Google Sheets quota exceeded' }), { status: 500 });
       }
