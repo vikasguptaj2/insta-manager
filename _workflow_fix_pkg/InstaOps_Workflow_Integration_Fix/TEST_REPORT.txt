@@ -1,0 +1,7 @@
+01-extract-upload.json: 39 nodes; graph, syntax and credential schema checks passed (header credentials require binding)
+02-publish-content.json: 92 nodes; graph, syntax and credential schema checks passed (header credentials require binding)
+03-scheduled-runner.json: 16 nodes; graph, syntax and credential schema checks passed (header credentials require binding)
+04-content-management.json: 43 nodes; graph, syntax and credential schema checks passed (header credentials require binding)
+05-recovery-reconciliation.json: 36 nodes; graph, syntax and credential schema checks passed (header credentials require binding)
+../00-manual-credential-check.json: 7 nodes; graph, syntax and credential schema checks passed (header credentials require binding)
+PASS: 233 nodes, 25 IF conditions, 80 Code-node syntax checks, 230 expression checks, 583 assertions. Offline checks only; actual n8n runtime and credential contents not verified.

@@ -64,6 +64,12 @@ describe('InstaOps v2.0 Production Reliability Regressions', () => {
           headers: { 'content-type': 'application/json' },
         });
       }
+      if (url.includes('/rest/v1/rpc/instaops_get_runtime_settings')) {
+        return new Response(
+          JSON.stringify([{ live_publish_enabled: true, live_delete_enabled: true, scheduling_enabled: true }]),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
       if (url.includes('/rest/v1/rpc/instaops_approve_post_revision')) {
         approvedCalled = true;
         return new Response(

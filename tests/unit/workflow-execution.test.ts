@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
@@ -46,6 +45,7 @@ interface WaitCall {
 interface DagRunOptions {
   webhookBody?: JsonRecord;
   webhookHeaders?: Record<string, string>;
+  expectedWebhookSecret?: string;
   vars?: Record<string, string>;
   env?: Record<string, string>;
   envBlocked?: boolean;
@@ -67,11 +67,8 @@ interface DagRunResult {
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const TEST_SECRET = ['test', 'wh', 'secret', 'val'].join('_');
-const TEST_CLD_KEY = ['9911', '2233', '44'].join('');
-const TEST_CLD_SECRET = ['cld', 'sec', 'mock', 'val'].join('_');
 const TEST_IG_ID = '17841453414532595';
 const TEST_POST_UUID = '11111111-2222-4333-8444-555555555555';
-const TEST_OTHER_UUID = '99999999-8888-4777-8666-555555555555';
 
 function loadWorkflow(relPath: string): WorkflowJson {
   return JSON.parse(fs.readFileSync(path.join(REPO_ROOT, relPath), 'utf8')) as WorkflowJson;
@@ -212,6 +209,50 @@ function runCodeNode(
   });
 }
 
+function evalV2Condition(
+  cond: JsonRecord,
+  currentJson: JsonRecord,
+  nodeHistory: Map<string, ExecutedNodeItem[]>,
+  vars: Record<string, string>,
+): boolean {
+  const op = asRecord(cond.operator);
+  const opType = String(op.type || '').toLowerCase();
+  const opName = String(op.operation || '');
+  const leftVal = evalExpressionValue(cond.leftValue, currentJson, nodeHistory, vars);
+  const rightVal = evalExpressionValue(cond.rightValue, currentJson, nodeHistory, vars);
+
+  if (opType === 'boolean') {
+    if (opName === 'true') return Boolean(leftVal) === true;
+    if (opName === 'false') return Boolean(leftVal) === false;
+    if (opName === 'equals') return Boolean(leftVal) === Boolean(rightVal);
+    if (opName === 'notEquals') return Boolean(leftVal) !== Boolean(rightVal);
+    if (opName === 'exists') return leftVal !== undefined && leftVal !== null;
+    if (opName === 'notExists') return leftVal === undefined || leftVal === null;
+  }
+  if (opType === 'number') {
+    const l = Number(leftVal);
+    const r = Number(rightVal);
+    if (opName === 'equals') return l === r;
+    if (opName === 'notEquals') return l !== r;
+    if (opName === 'gt') return l > r;
+    if (opName === 'gte') return l >= r;
+    if (opName === 'lt') return l < r;
+    if (opName === 'lte') return l <= r;
+  }
+  const ls = leftVal === undefined || leftVal === null ? '' : String(leftVal);
+  const rs = rightVal === undefined || rightVal === null ? '' : String(rightVal);
+  if (opName === 'equals') return ls === rs;
+  if (opName === 'notEquals') return ls !== rs;
+  if (opName === 'startsWith') return ls.startsWith(rs);
+  if (opName === 'endsWith') return ls.endsWith(rs);
+  if (opName === 'contains') return ls.includes(rs);
+  if (opName === 'notEmpty') return ls.length > 0;
+  if (opName === 'empty') return ls.length === 0;
+  if (opName === 'exists') return leftVal !== undefined && leftVal !== null;
+  if (opName === 'notExists') return leftVal === undefined || leftVal === null;
+  return false;
+}
+
 function evalIfCondition(
   node: WorkflowNode,
   currentJson: JsonRecord,
@@ -219,6 +260,14 @@ function evalIfCondition(
   vars: Record<string, string>,
 ): boolean {
   const conditions = asRecord(node.parameters?.conditions);
+  if (Array.isArray(conditions.conditions)) {
+    const list = conditions.conditions as unknown[];
+    const combinator = String(conditions.combinator || 'and').toLowerCase();
+    if (list.length === 0) return true;
+    return combinator === 'or'
+      ? list.some((c) => evalV2Condition(asRecord(c), currentJson, nodeHistory, vars))
+      : list.every((c) => evalV2Condition(asRecord(c), currentJson, nodeHistory, vars));
+  }
   const bools = Array.isArray(conditions.boolean) ? conditions.boolean : [];
   for (const condRaw of bools) {
     const c = asRecord(condRaw);
@@ -248,16 +297,12 @@ function evalSwitchBranch(
     const rule = asRecord(rules[i]);
     const condWrap = asRecord(rule.conditions);
     const list = Array.isArray(condWrap.conditions) ? condWrap.conditions : [];
-    const matchedAll = list.every((itemRaw) => {
-      const cond = asRecord(itemRaw);
-      const op = asRecord(cond.operator);
-      const left = String(evalExpressionValue(cond.leftValue, currentJson, nodeHistory, vars) ?? '');
-      const right = String(cond.rightValue ?? '');
-      if (op.operation === 'equals') return left === right;
-      if (op.operation === 'startsWith') return left.startsWith(right);
-      return false;
-    });
-    if (matchedAll) return i;
+    const combinator = String(condWrap.combinator || 'and').toLowerCase();
+    const matched =
+      combinator === 'or'
+        ? list.some((itemRaw) => evalV2Condition(asRecord(itemRaw), currentJson, nodeHistory, vars))
+        : list.every((itemRaw) => evalV2Condition(asRecord(itemRaw), currentJson, nodeHistory, vars));
+    if (matched) return i;
   }
   return rules.length;
 }
@@ -267,7 +312,10 @@ async function runWorkflowDag(wf: WorkflowJson, opts: DagRunOptions): Promise<Da
   for (const node of wf.nodes) nodeMap.set(node.name, node);
 
   const trigger = wf.nodes.find(
-    (n) => n.type === 'n8n-nodes-base.webhook' || n.type === 'n8n-nodes-base.scheduleTrigger',
+    (n) =>
+      n.type === 'n8n-nodes-base.webhook' ||
+      n.type === 'n8n-nodes-base.scheduleTrigger' ||
+      n.type === 'n8n-nodes-base.manualTrigger',
   );
   if (!trigger) throw new Error(`No trigger node found in ${wf.name}`);
   if (trigger.type === 'n8n-nodes-base.scheduleTrigger' && trigger.disabled && !opts.ignoreTriggerDisabled) {
@@ -279,6 +327,29 @@ async function runWorkflowDag(wf: WorkflowJson, opts: DagRunOptions): Promise<Da
       executedNodes: [],
       lastNodeOutput: null,
     };
+  }
+  if (trigger.type === 'n8n-nodes-base.webhook' && trigger.parameters?.authentication === 'headerAuth') {
+    const hdrCred = asRecord(asRecord(trigger.credentials).httpHeaderAuth);
+    assert.ok(hdrCred.id || hdrCred.name, `Webhook ${trigger.name} must bind httpHeaderAuth credential`);
+    const headers = opts.webhookHeaders ?? {};
+    const received = Object.entries(headers).find(([k]) => k.toLowerCase() === 'x-dashboard-secret')?.[1] ?? '';
+    const expected = opts.expectedWebhookSecret ?? opts.vars?.N8N_WEBHOOK_SECRET ?? TEST_SECRET;
+    if (!expected || received !== expected) {
+      return {
+        responded: [
+          {
+            nodeName: trigger.name,
+            statusCode: 403,
+            body: { code: 403, message: 'Authorization data is wrong!' },
+          },
+        ],
+        httpCalls: [],
+        sheetCalls: [],
+        waitCalls: [],
+        executedNodes: [],
+        lastNodeOutput: null,
+      };
+    }
   }
 
   const nodeHistory = new Map<string, ExecutedNodeItem[]>();
@@ -454,22 +525,45 @@ async function runWorkflowDag(wf: WorkflowJson, opts: DagRunOptions): Promise<Da
   return { responded, httpCalls, sheetCalls, waitCalls, executedNodes, lastNodeOutput };
 }
 
-function cloudinarySig(params: Record<string, string>, secret: string): string {
-  const base = Object.keys(params)
-    .filter((k) => k !== 'file' && k !== 'api_key' && k !== 'signature' && k !== 'resource_type')
-    .sort()
-    .map((k) => `${k}=${params[k]}`)
-    .join('&');
-  return crypto.createHash('sha1').update(`${base}${secret}`).digest('hex');
-}
-
 describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch)', () => {
-  it('W01: blocks when $env is denied and $vars lacks secret (HTTP 500)', async () => {
+  it('W00: executes 5-provider manual credential diagnostic (including httpBasicAuth Cloudinary & httpHeaderAuth Meta/Downloader)', async () => {
+    const w00 = loadWorkflow('n8n/workflows/00-manual-credential-check.json');
+    const res = await runWorkflowDag(w00, {
+      httpHandler: (req) => {
+        if (req.url.includes('/rest/v1/instaops_posts')) {
+          assert.ok(req.credentials.httpCustomAuth, 'W00 Supabase check requires httpCustomAuth');
+          return { statusCode: 200, body: [{ id: TEST_POST_UUID }] };
+        }
+        if (req.url.endsWith('/api/n8n/resolve')) {
+          assert.ok(req.credentials.httpHeaderAuth, 'W00 Downloader check requires httpHeaderAuth');
+          return { statusCode: 400, body: { ok: false, error: 'Missing url' } };
+        }
+        if (req.url.includes('/usage')) {
+          assert.ok(req.credentials.httpBasicAuth, 'W00 Cloudinary check requires httpBasicAuth');
+          return { statusCode: 200, body: { plan: 'Free', resources: 4 } };
+        }
+        if (req.url.includes(`/${TEST_IG_ID}?fields=id,username`)) {
+          assert.ok(req.credentials.httpHeaderAuth, 'W00 IG check requires httpHeaderAuth');
+          return { statusCode: 200, body: { id: TEST_IG_ID, username: 'vikas.sphere' } };
+        }
+        return { statusCode: 200, body: {} };
+      },
+      sheetsHandler: () => [],
+    });
+
+    assert.equal(asRecord(asRecord(res.lastNodeOutput).supabase).ok, true);
+    assert.equal(asRecord(asRecord(res.lastNodeOutput).downloader).ok, true);
+    assert.equal(asRecord(asRecord(res.lastNodeOutput).cloudinary).ok, true);
+    assert.equal(asRecord(asRecord(res.lastNodeOutput).instagram).username, 'vikas.sphere');
+    assert.equal(asRecord(asRecord(res.lastNodeOutput).sheets).ok, true);
+  });
+
+  it('W01: native Webhook Header Auth rejects missing/wrong secret and validates authorized flag BEFORE HTTP calls', async () => {
     const w01 = loadWorkflow('n8n/workflows/01-extract-upload.json');
-    const res = await runWorkflowDag(w01, {
+    const unauth = await runWorkflowDag(w01, {
       envBlocked: true,
-      vars: {},
-      webhookHeaders: { 'x-dashboard-secret': TEST_SECRET },
+      vars: { N8N_WEBHOOK_SECRET: TEST_SECRET },
+      webhookHeaders: { 'x-dashboard-secret': 'wrong_secret' },
       webhookBody: {
         post_uuid: TEST_POST_UUID,
         post_id: 'IG-EXT-01',
@@ -477,14 +571,32 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
         authorized: true,
       },
       httpHandler: () => {
-        throw new Error('No HTTP request should run when guard rejects');
+        throw new Error('No HTTP request should run when Header Auth rejects');
       },
     });
-    assert.equal(res.responded[0]?.statusCode, 500);
-    assert.equal(res.httpCalls.length, 0);
+    assert.equal(unauth.responded[0]?.statusCode, 403);
+    assert.equal(unauth.executedNodes.length, 0);
+    assert.equal(unauth.httpCalls.length, 0);
+
+    const noConsent = await runWorkflowDag(w01, {
+      envBlocked: true,
+      vars: {},
+      webhookHeaders: { 'x-dashboard-secret': TEST_SECRET },
+      webhookBody: {
+        post_uuid: TEST_POST_UUID,
+        post_id: 'IG-EXT-01B',
+        source_instagram_url: 'https://www.instagram.com/reel/Abc123/',
+        authorized: false,
+      },
+      httpHandler: () => {
+        throw new Error('No HTTP request should run when authorized !== true');
+      },
+    });
+    assert.equal(noConsent.responded[0]?.statusCode, 403);
+    assert.equal(noConsent.httpCalls.length, 0);
   });
 
-  it('W01: executes mixed 3-item carousel via $vars + native HTTP Request nodes -> instaops-v2/ DRAFT', async () => {
+  it('W01: executes mixed 3-item carousel via $vars + Basic Auth Cloudinary + CHECK guards -> instaops-v2/ DRAFT', async () => {
     const w01 = loadWorkflow('n8n/workflows/01-extract-upload.json');
     let finalizePayload: JsonRecord = {};
     let renewCount = 0;
@@ -496,8 +608,6 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
         SUPABASE_URL: 'https://sb.example.supabase.co',
         DOWNLOADER_BASE_URL: 'https://ig-dowloader-nnnn.vercel.app',
         CLOUDINARY_CLOUD_NAME: 'demo',
-        CLOUDINARY_API_KEY: TEST_CLD_KEY,
-        CLOUDINARY_API_SECRET: TEST_CLD_SECRET,
       },
       webhookHeaders: { 'x-dashboard-secret': TEST_SECRET },
       webhookBody: {
@@ -514,11 +624,29 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
         if (req.url.includes('/rpc/instaops_transfer_or_claim_lock')) {
           return { statusCode: 200, body: [{ acquired: true }] };
         }
-        if (req.url.includes('/instaops_posts?id=eq.')) {
+        if (req.url.includes('/instaops_posts?id=eq.') && req.method === 'GET') {
           return {
             statusCode: 200,
-            body: [{ id: TEST_POST_UUID, post_id: 'IG-EXT-02', status: 'DRAFT', media_type: 'CAROUSEL' }],
+            body: [
+              {
+                id: TEST_POST_UUID,
+                post_id: 'IG-EXT-02',
+                source_instagram_url: 'https://www.instagram.com/p/Carousel123/',
+                revision: 1,
+                status: 'DRAFT',
+                media_type: 'CAROUSEL',
+              },
+            ],
           };
+        }
+        if (req.url.includes('/instaops_posts?id=eq.') && req.method === 'PATCH') {
+          return {
+            statusCode: 200,
+            body: [{ id: TEST_POST_UUID, status: asRecord(req.body).status || 'UPLOADING' }],
+          };
+        }
+        if (req.url.includes('/instaops_jobs?job_id=eq.') && req.method === 'PATCH') {
+          return { statusCode: 200, body: [{ job_id: 'job_ext_1' }] };
         }
         if (req.url === 'https://ig-dowloader-nnnn.vercel.app/api/n8n/resolve') {
           assert.ok(req.credentials.httpHeaderAuth, 'Downloader node must bind httpHeaderAuth');
@@ -531,9 +659,9 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
               mediaType: 'CAROUSEL',
               sourceId: 'Carousel123',
               items: [
-                { url: 'https://cdn.example.com/1.jpg', type: 'IMAGE' },
-                { url: 'https://cdn.example.com/2.mp4', type: 'VIDEO' },
-                { url: 'https://cdn.example.com/3.jpg', type: 'IMAGE' },
+                { url: 'https://scontent.cdninstagram.com/v/1.jpg', type: 'IMAGE' },
+                { url: 'https://scontent.cdninstagram.com/v/2.mp4', type: 'VIDEO' },
+                { url: 'https://scontent.cdninstagram.com/v/3.jpg', type: 'IMAGE' },
               ],
             },
           };
@@ -543,12 +671,8 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
           return { statusCode: 200, body: [{ renewed: true }] };
         }
         if (req.url.startsWith('https://api.cloudinary.com/v1_1/demo/') && req.url.endsWith('/upload')) {
+          assert.ok(req.credentials.httpBasicAuth, 'Cloudinary upload must bind httpBasicAuth');
           assert.ok(req.formBody, 'Cloudinary upload must use form-urlencoded');
-          assert.equal(
-            cloudinarySig(req.formBody, TEST_CLD_SECRET),
-            req.formBody.signature,
-            'Cloudinary upload signature must verify cleanly',
-          );
           assert.ok(req.formBody.public_id?.startsWith('instaops-v2/'));
           const isVid = req.url.includes('/video/');
           return {
@@ -557,6 +681,7 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
               public_id: req.formBody.public_id,
               asset_id: `cld_${req.formBody.public_id}`,
               secure_url: `https://res.cloudinary.com/demo/${isVid ? 'video' : 'image'}/upload/v1/${req.formBody.public_id}.${isVid ? 'mp4' : 'jpg'}`,
+              resource_type: isVid ? 'video' : 'image',
               bytes: 1024,
               type: 'upload',
             },
@@ -564,7 +689,10 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
         }
         if (req.url.includes('/rpc/instaops_finalize_extraction')) {
           finalizePayload = asRecord(req.body);
-          return { statusCode: 200, body: { ok: true } };
+          return {
+            statusCode: 200,
+            body: [{ id: TEST_POST_UUID, status: asRecord(finalizePayload.p_post_patch).status || 'DRAFT' }],
+          };
         }
         return { statusCode: 200, body: [] };
       },
@@ -589,11 +717,8 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
       SUPABASE_URL: 'https://sb.example.supabase.co',
       DOWNLOADER_BASE_URL: 'https://ig-dowloader-nnnn.vercel.app',
       CLOUDINARY_CLOUD_NAME: 'demo',
-      CLOUDINARY_API_KEY: TEST_CLD_KEY,
-      CLOUDINARY_API_SECRET: TEST_CLD_SECRET,
     };
 
-    // Expired URL must fail before any Cloudinary call
     let expPatch: JsonRecord = {};
     const resExp = await runWorkflowDag(w01, {
       vars,
@@ -606,16 +731,36 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
       },
       httpHandler: (req) => {
         if (req.url.includes('instaops_transfer_or_claim_lock')) return { statusCode: 200, body: [{ acquired: true }] };
-        if (req.url.includes('instaops_posts')) return { statusCode: 200, body: [{ id: TEST_POST_UUID, status: 'DRAFT' }] };
+        if (req.url.includes('instaops_posts') && req.method === 'GET') {
+          return {
+            statusCode: 200,
+            body: [
+              {
+                id: TEST_POST_UUID,
+                post_id: 'IG-EXP-1',
+                source_instagram_url: 'https://instagram.com/reel/Exp1/',
+                revision: 1,
+                status: 'DRAFT',
+              },
+            ],
+          };
+        }
+        if (req.url.includes('instaops_posts') && req.method === 'PATCH') {
+          return { statusCode: 200, body: [{ id: TEST_POST_UUID, status: 'EXTRACTING' }] };
+        }
         if (req.url.endsWith('/api/n8n/resolve')) {
           return {
             statusCode: 200,
-            body: { ok: true, status: 'ready', items: [{ url: 'https://cdn.example.com/a.mp4', type: 'VIDEO', expiresAt: '2020-01-01T00:00:00Z' }] },
+            body: {
+              ok: true,
+              status: 'ready',
+              items: [{ url: 'https://scontent.cdninstagram.com/v/a.mp4', type: 'VIDEO', expiresAt: '2020-01-01T00:00:00Z' }],
+            },
           };
         }
         if (req.url.includes('instaops_finalize_extraction')) {
           expPatch = asRecord(asRecord(req.body).p_post_patch);
-          return { statusCode: 200, body: { ok: true } };
+          return { statusCode: 200, body: [{ id: TEST_POST_UUID, status: String(expPatch.status || 'FAILED') }] };
         }
         return { statusCode: 200, body: [] };
       },
@@ -624,7 +769,6 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
     assert.equal(expPatch.status, 'FAILED');
     assert.equal(expPatch.error_code, 'MEDIA_URL_EXPIRED');
 
-    // Partial 2-item upload failure must checkpoint item 0
     let partialFinalize: JsonRecord = {};
     let uploadTry = 0;
     await runWorkflowDag(w01, {
@@ -638,11 +782,35 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
       },
       httpHandler: (req) => {
         if (req.url.includes('instaops_transfer_or_claim_lock')) return { statusCode: 200, body: [{ acquired: true }] };
-        if (req.url.includes('instaops_posts')) return { statusCode: 200, body: [{ id: TEST_POST_UUID, status: 'DRAFT' }] };
+        if (req.url.includes('instaops_posts') && req.method === 'GET') {
+          return {
+            statusCode: 200,
+            body: [
+              {
+                id: TEST_POST_UUID,
+                post_id: 'IG-PART-1',
+                source_instagram_url: 'https://instagram.com/p/Part1/',
+                revision: 1,
+                status: 'DRAFT',
+              },
+            ],
+          };
+        }
+        if (req.url.includes('instaops_posts') && req.method === 'PATCH') {
+          return { statusCode: 200, body: [{ id: TEST_POST_UUID, status: 'UPLOADING' }] };
+        }
+        if (req.url.includes('instaops_renew_lock')) return { statusCode: 200, body: [{ renewed: true }] };
         if (req.url.endsWith('/api/n8n/resolve')) {
           return {
             statusCode: 200,
-            body: { ok: true, status: 'ready', items: [{ url: 'https://cdn.example.com/1.jpg', type: 'IMAGE' }, { url: 'https://cdn.example.com/2.jpg', type: 'IMAGE' }] },
+            body: {
+              ok: true,
+              status: 'ready',
+              items: [
+                { url: 'https://scontent.cdninstagram.com/v/1.jpg', type: 'IMAGE' },
+                { url: 'https://scontent.cdninstagram.com/v/2.jpg', type: 'IMAGE' },
+              ],
+            },
           };
         }
         if (req.url.includes('/upload')) {
@@ -650,14 +818,20 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
           if (uploadTry === 1) {
             return {
               statusCode: 200,
-              body: { public_id: 'instaops-v2/IG-PART-1/item_0_src', asset_id: 'a0', secure_url: 'https://res.cloudinary.com/demo/image/upload/v1/instaops-v2/IG-PART-1/item_0_src.jpg', bytes: 500 },
+              body: {
+                public_id: `instaops-v2/${TEST_POST_UUID}/item_0_src`,
+                asset_id: 'a0',
+                secure_url: `https://res.cloudinary.com/demo/image/upload/v1/instaops-v2/${TEST_POST_UUID}/item_0_src.jpg`,
+                resource_type: 'image',
+                bytes: 500,
+              },
             };
           }
           return { statusCode: 500, body: { error: { message: 'upstream cld fail' } } };
         }
         if (req.url.includes('instaops_finalize_extraction')) {
           partialFinalize = asRecord(req.body);
-          return { statusCode: 200, body: { ok: true } };
+          return { statusCode: 200, body: [{ id: TEST_POST_UUID, status: 'FAILED' }] };
         }
         return { statusCode: 200, body: [] };
       },
@@ -667,39 +841,67 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
     assert.equal(asRecord(partialFinalize.p_post_patch).error_code, 'CLOUDINARY_UPLOAD_FAILED');
   });
 
-  it('W02: enforces LIVE_PUBLISH_ENABLED=false, logical-OR revision check, disabled account, and no spoofed media URLs', async () => {
+  it('W02: enforces authoritative DB runtime gate (409 false / 503 RPC fail), revision check, disabled account, and no spoofed URLs', async () => {
     const w02 = loadWorkflow('n8n/workflows/02-publish-content.json');
 
     const resDisabled = await runWorkflowDag(w02, {
-      vars: { N8N_WEBHOOK_SECRET: TEST_SECRET, LIVE_PUBLISH_ENABLED: 'false' },
+      vars: { N8N_WEBHOOK_SECRET: TEST_SECRET, SUPABASE_URL: 'https://sb.example.supabase.co' },
       webhookHeaders: { 'x-dashboard-secret': TEST_SECRET },
-      webhookBody: { post_uuid: TEST_POST_UUID, post_id: 'IG-P-1', reviewed_revision: '2', confirm: true },
-      httpHandler: () => {
-        throw new Error('Must block before HTTP calls');
+      webhookBody: { post_uuid: TEST_POST_UUID, post_id: 'IG-P-1', reviewed_revision: '2', confirm: true, live_publish_enabled: true },
+      httpHandler: (req) => {
+        if (req.url.includes('instaops_get_runtime_settings')) {
+          return { statusCode: 200, body: [{ live_publish_enabled: false, live_delete_enabled: false, scheduling_enabled: false }] };
+        }
+        throw new Error('Must block before lock or Graph calls when DB live_publish_enabled=false');
       },
     });
     assert.equal(resDisabled.responded[0]?.statusCode, 409);
+    assert.equal(resDisabled.httpCalls.length, 1);
+
+    const resRpcFail = await runWorkflowDag(w02, {
+      vars: { N8N_WEBHOOK_SECRET: TEST_SECRET, SUPABASE_URL: 'https://sb.example.supabase.co' },
+      webhookHeaders: { 'x-dashboard-secret': TEST_SECRET },
+      webhookBody: { post_uuid: TEST_POST_UUID, post_id: 'IG-P-1B', reviewed_revision: '2', confirm: true, live_publish_enabled: true },
+      httpHandler: (req) => {
+        if (req.url.includes('instaops_get_runtime_settings')) {
+          return { statusCode: 500, body: { message: 'rpc down' } };
+        }
+        throw new Error('Must fail closed (503) when settings RPC errors');
+      },
+    });
+    assert.equal(resRpcFail.responded[0]?.statusCode, 503);
 
     let releasedOnRevMismatch = false;
     await runWorkflowDag(w02, {
-      vars: { N8N_WEBHOOK_SECRET: TEST_SECRET, LIVE_PUBLISH_ENABLED: 'true', SUPABASE_URL: 'https://sb.example.supabase.co' },
+      vars: { N8N_WEBHOOK_SECRET: TEST_SECRET, SUPABASE_URL: 'https://sb.example.supabase.co', CLOUDINARY_CLOUD_NAME: 'demo' },
       webhookHeaders: { 'x-dashboard-secret': TEST_SECRET },
       webhookBody: { post_uuid: TEST_POST_UUID, post_id: 'IG-P-2', reviewed_revision: '3', approved_revision: '3', confirm: true, job_id: 'job_rev_1' },
       httpHandler: (req) => {
+        if (req.url.includes('instaops_get_runtime_settings')) {
+          return { statusCode: 200, body: [{ live_publish_enabled: true, live_delete_enabled: false, scheduling_enabled: false }] };
+        }
         if (req.url.includes('instaops_transfer_or_claim_lock')) return { statusCode: 200, body: [{ acquired: true }] };
         if (req.url.includes('instaops_posts')) {
-          // DB revision=3, approved_revision=2 (stale approval even though request claimed 3)
-          return { statusCode: 200, body: [{ id: TEST_POST_UUID, post_id: 'IG-P-2', status: 'READY', revision: 3, approved_revision: 2, ig_user_id: TEST_IG_ID, media_type: 'IMAGE', caption: 'hi' }] };
+          return {
+            statusCode: 200,
+            body: [{ id: TEST_POST_UUID, post_id: 'IG-P-2', status: 'READY', revision: 3, approved_revision: 2, ig_user_id: TEST_IG_ID, media_type: 'IMAGE', media_count: 1, caption: 'hi' }],
+          };
         }
         if (req.url.includes('instaops_media_assets')) {
-          return { statusCode: 200, body: [{ id: 'a1', storage_status: 'ACTIVE', media_index: 0, resource_type: 'image', secure_url: 'https://res.cloudinary.com/demo/image/upload/v1/ok.jpg' }] };
+          return {
+            statusCode: 200,
+            body: [{ id: 'a1', post_uuid: TEST_POST_UUID, storage_status: 'ACTIVE', media_index: 0, resource_type: 'image', secure_url: 'https://res.cloudinary.com/demo/image/upload/v1/ok.jpg' }],
+          };
         }
         if (req.url.includes('instaops_accounts')) return { statusCode: 200, body: [{ ig_user_id: TEST_IG_ID, enabled: true }] };
+        if (req.url.includes('instaops_jobs?job_id=eq.') && req.method === 'PATCH') {
+          return { statusCode: 200, body: [{ job_id: 'job_rev_1' }] };
+        }
         if (req.url.includes('instaops_release_lock')) {
           releasedOnRevMismatch = true;
           return { statusCode: 200, body: [{ released: true }] };
         }
-        return { statusCode: 200, body: [] };
+        return { statusCode: 200, body: [{}] };
       },
     });
     assert.equal(releasedOnRevMismatch, true);
@@ -713,6 +915,7 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
 
     const assets = Array.from({ length: 9 }, (_, i) => ({
       id: `ast_row_${i}`,
+      post_uuid: TEST_POST_UUID,
       internal_asset_id: `ast_${i}`,
       media_index: i,
       resource_type: i === 2 ? 'video' : 'image',
@@ -725,8 +928,8 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
       maxSteps: 300,
       vars: {
         N8N_WEBHOOK_SECRET: TEST_SECRET,
-        LIVE_PUBLISH_ENABLED: 'true',
         SUPABASE_URL: 'https://sb.example.supabase.co',
+        CLOUDINARY_CLOUD_NAME: 'demo',
         N8N_GRAPH_POLL_INTERVAL_SEC: '2',
         N8N_GRAPH_MAX_POLLS: '5',
       },
@@ -745,12 +948,17 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
         media_url: 'https://evil.spoofed.url/malicious.jpg',
       },
       httpHandler: (req) => {
+        if (req.url.includes('instaops_get_runtime_settings')) {
+          return { statusCode: 200, body: [{ live_publish_enabled: true, live_delete_enabled: false, scheduling_enabled: false }] };
+        }
         if (req.url.includes('instaops_transfer_or_claim_lock')) return { statusCode: 200, body: [{ acquired: true }] };
         if (req.url.includes('instaops_posts') && req.method === 'GET') {
-          return { statusCode: 200, body: [{ id: TEST_POST_UUID, post_id: 'IG-CAR-9', status: 'READY', revision: 4, approved_revision: 4, ig_user_id: TEST_IG_ID, media_type: 'CAROUSEL', caption: '9 items!' }] };
+          return { statusCode: 200, body: [{ id: TEST_POST_UUID, post_id: 'IG-CAR-9', status: 'READY', revision: 4, approved_revision: 4, ig_user_id: TEST_IG_ID, media_type: 'CAROUSEL', media_count: 9, caption: '9 items!' }] };
         }
         if (req.url.includes('instaops_media_assets') && req.method === 'GET') return { statusCode: 200, body: assets };
         if (req.url.includes('instaops_accounts')) return { statusCode: 200, body: [{ ig_user_id: TEST_IG_ID, enabled: true }] };
+        if (req.url.includes('instaops_media_assets') && req.method === 'PATCH') return { statusCode: 200, body: [{}] };
+        if (req.url.includes('instaops_jobs?job_id=eq.') && req.method === 'PATCH') return { statusCode: 200, body: [{ job_id: 'job_car9' }] };
         if (req.url.endsWith(`/${TEST_IG_ID}/media`)) {
           const b = asRecord(req.body);
           if (b.is_carousel_item) {
@@ -780,7 +988,10 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
           const patch = asRecord(req.body);
           if (patch.status === 'PUBLISHED') events.push('PERSIST_PUBLISHED_ID');
           if (patch.published_url) events.push('SAVE_PERMALINK');
-          return { statusCode: 200, body: [{ ...patch, id: TEST_POST_UUID, post_id: 'IG-CAR-9' }] };
+          return {
+            statusCode: 200,
+            body: [{ ...patch, id: TEST_POST_UUID, post_id: 'IG-CAR-9', status: patch.status || 'PUBLISHED', published_id: '17999999999999999' }],
+          };
         }
         if (req.url.includes('/17999999999999999?')) {
           events.push('FETCH_PERMALINK');
@@ -794,7 +1005,8 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
           events.push(`SYNC_${String(asRecord(req.body).entity_type)}`);
           return { statusCode: 201, body: {} };
         }
-        return { statusCode: 200, body: { renewed: true } };
+        if (req.url.includes('instaops_renew_lock')) return { statusCode: 200, body: [{ renewed: true }] };
+        return { statusCode: 200, body: [{}] };
       },
     });
 
@@ -817,12 +1029,11 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
     const w02 = loadWorkflow('n8n/workflows/02-publish-content.json');
     const vars = {
       N8N_WEBHOOK_SECRET: TEST_SECRET,
-      LIVE_PUBLISH_ENABLED: 'true',
       SUPABASE_URL: 'https://sb.example.supabase.co',
+      CLOUDINARY_CLOUD_NAME: 'demo',
       N8N_GRAPH_POLL_INTERVAL_SEC: '1',
     };
 
-    // Case 1: Permalink error after media_publish succeeds
     let auditLogged = false;
     let mediaPubCount = 0;
     await runWorkflowDag(w02, {
@@ -830,32 +1041,38 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
       webhookHeaders: { 'x-dashboard-secret': TEST_SECRET },
       webhookBody: { post_uuid: TEST_POST_UUID, post_id: 'IG-PERM-ERR', reviewed_revision: '1', confirm: true },
       httpHandler: (req) => {
+        if (req.url.includes('instaops_get_runtime_settings')) return { statusCode: 200, body: [{ live_publish_enabled: true }] };
         if (req.url.includes('instaops_transfer_or_claim_lock')) return { statusCode: 200, body: [{ acquired: true }] };
         if (req.url.includes('instaops_posts') && req.method === 'GET') {
-          return { statusCode: 200, body: [{ id: TEST_POST_UUID, post_id: 'IG-PERM-ERR', status: 'READY', revision: 1, approved_revision: 1, ig_user_id: TEST_IG_ID, media_type: 'IMAGE', caption: 'ok' }] };
+          return { statusCode: 200, body: [{ id: TEST_POST_UUID, post_id: 'IG-PERM-ERR', status: 'READY', revision: 1, approved_revision: 1, ig_user_id: TEST_IG_ID, media_type: 'IMAGE', media_count: 1, caption: 'ok' }] };
         }
         if (req.url.includes('instaops_media_assets')) {
-          return { statusCode: 200, body: [{ id: 'a0', storage_status: 'ACTIVE', media_index: 0, resource_type: 'image', secure_url: 'https://res.cloudinary.com/demo/image/upload/v1/ok.jpg' }] };
+          return { statusCode: 200, body: [{ id: 'a0', post_uuid: TEST_POST_UUID, storage_status: 'ACTIVE', media_index: 0, resource_type: 'image', secure_url: 'https://res.cloudinary.com/demo/image/upload/v1/ok.jpg' }] };
         }
         if (req.url.includes('instaops_accounts')) return { statusCode: 200, body: [{ ig_user_id: TEST_IG_ID, enabled: true }] };
+        if (req.url.includes('instaops_renew_lock')) return { statusCode: 200, body: [{ renewed: true }] };
         if (req.url.endsWith(`/${TEST_IG_ID}/media`)) return { statusCode: 200, body: { id: 'c_single_1' } };
         if (req.url.includes('/c_single_1?')) return { statusCode: 200, body: { id: 'c_single_1', status_code: 'FINISHED' } };
         if (req.url.endsWith(`/${TEST_IG_ID}/media_publish`)) {
           mediaPubCount++;
-          return { statusCode: 200, body: { id: 'pub_single_1' } };
+          return { statusCode: 200, body: { id: '18000000000000001' } };
         }
-        if (req.url.includes('/pub_single_1?')) return { statusCode: 502, body: { error: { message: 'meta flake' } } };
+        if (req.url.includes('instaops_posts') && req.method === 'PATCH') {
+          const patch = asRecord(req.body);
+          return { statusCode: 200, body: [{ id: TEST_POST_UUID, status: patch.status || 'PUBLISHED', published_id: patch.published_id || '18000000000000001' }] };
+        }
+        if (req.url.includes('/18000000000000001?')) return { statusCode: 502, body: { error: { message: 'meta flake' } } };
         if (req.url.includes('instaops_audit_events')) {
           auditLogged = true;
           return { statusCode: 201, body: {} };
         }
-        return { statusCode: 200, body: {} };
+        if (req.url.includes('instaops_release_lock')) return { statusCode: 200, body: [{ released: true }] };
+        return { statusCode: 200, body: [] };
       },
     });
     assert.equal(mediaPubCount, 1);
     assert.equal(auditLogged, true);
 
-    // Case 2: media_publish timeout retains VERIFY_MANUALLY + preserves lock (no release_lock call)
     let lockReleasedOnTimeout = false;
     let uncertainStatus = '';
     await runWorkflowDag(w02, {
@@ -863,48 +1080,57 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
       webhookHeaders: { 'x-dashboard-secret': TEST_SECRET },
       webhookBody: { post_uuid: TEST_POST_UUID, post_id: 'IG-TO-1', reviewed_revision: '1', confirm: true },
       httpHandler: (req) => {
+        if (req.url.includes('instaops_get_runtime_settings')) return { statusCode: 200, body: [{ live_publish_enabled: true }] };
         if (req.url.includes('instaops_transfer_or_claim_lock')) return { statusCode: 200, body: [{ acquired: true }] };
         if (req.url.includes('instaops_posts') && req.method === 'GET') {
-          return { statusCode: 200, body: [{ id: TEST_POST_UUID, post_id: 'IG-TO-1', status: 'READY', revision: 1, approved_revision: 1, ig_user_id: TEST_IG_ID, media_type: 'IMAGE', caption: 'ok' }] };
+          return { statusCode: 200, body: [{ id: TEST_POST_UUID, post_id: 'IG-TO-1', status: 'READY', revision: 1, approved_revision: 1, ig_user_id: TEST_IG_ID, media_type: 'IMAGE', media_count: 1, caption: 'ok' }] };
         }
         if (req.url.includes('instaops_media_assets')) {
-          return { statusCode: 200, body: [{ id: 'a0', storage_status: 'ACTIVE', media_index: 0, resource_type: 'image', secure_url: 'https://res.cloudinary.com/demo/image/upload/v1/ok.jpg' }] };
+          return { statusCode: 200, body: [{ id: 'a0', post_uuid: TEST_POST_UUID, storage_status: 'ACTIVE', media_index: 0, resource_type: 'image', secure_url: 'https://res.cloudinary.com/demo/image/upload/v1/ok.jpg' }] };
         }
         if (req.url.includes('instaops_accounts')) return { statusCode: 200, body: [{ ig_user_id: TEST_IG_ID, enabled: true }] };
+        if (req.url.includes('instaops_renew_lock')) return { statusCode: 200, body: [{ renewed: true }] };
         if (req.url.endsWith(`/${TEST_IG_ID}/media`)) return { statusCode: 200, body: { id: 'c_to_1' } };
         if (req.url.includes('/c_to_1?')) return { statusCode: 200, body: { id: 'c_to_1', status_code: 'FINISHED' } };
         if (req.url.endsWith(`/${TEST_IG_ID}/media_publish`)) return { networkError: 'ETIMEDOUT' };
-        if (req.url.includes('instaops_posts') && req.method === 'PATCH' && asRecord(req.body).status === 'VERIFY_MANUALLY') {
-          uncertainStatus = String(asRecord(req.body).error_code ?? '');
-          return { statusCode: 200, body: [{}] };
+        if (req.url.includes('instaops_posts') && req.method === 'PATCH') {
+          const patch = asRecord(req.body);
+          if (patch.status === 'VERIFY_MANUALLY') uncertainStatus = String(patch.error_code ?? '');
+          return { statusCode: 200, body: [{ id: TEST_POST_UUID, status: patch.status || 'VERIFY_MANUALLY' }] };
         }
         if (req.url.includes('instaops_release_lock')) lockReleasedOnTimeout = true;
-        return { statusCode: 200, body: {} };
+        return { statusCode: 200, body: [] };
       },
     });
     assert.equal(uncertainStatus, 'PUBLISH_OUTCOME_UNKNOWN');
     assert.equal(lockReleasedOnTimeout, false);
   });
 
-  it('W03: disabled schedule gate skips RPC; enabled runner atomically claims and handles 4xx vs timeout safely', async () => {
+  it('W03: disabled DB schedule gate skips claim RPC; enabled runner atomically claims and handles 4xx vs timeout safely', async () => {
     const w03 = loadWorkflow('n8n/workflows/03-scheduled-runner.json');
     const cronNode = w03.nodes.find((n) => n.type === 'n8n-nodes-base.scheduleTrigger');
     assert.equal(cronNode?.disabled, true);
 
     const skippedRes = await runWorkflowDag(w03, {
       ignoreTriggerDisabled: true,
-      vars: { SCHEDULING_ENABLED: 'false', LIVE_PUBLISH_ENABLED: 'true' },
-      httpHandler: () => {
-        throw new Error('RPC must not run when SCHEDULING_ENABLED=false');
+      vars: { SUPABASE_URL: 'https://sb.example.supabase.co' },
+      httpHandler: (req) => {
+        if (req.url.includes('instaops_get_runtime_settings')) {
+          return { statusCode: 200, body: [{ scheduling_enabled: false, live_publish_enabled: true }] };
+        }
+        throw new Error('Claim RPC must not run when DB scheduling_enabled=false');
       },
     });
-    assert.equal(skippedRes.httpCalls.length, 0);
+    assert.equal(skippedRes.httpCalls.length, 1);
 
     let releasedOn4xx = false;
     await runWorkflowDag(w03, {
       ignoreTriggerDisabled: true,
-      vars: { SCHEDULING_ENABLED: 'true', LIVE_PUBLISH_ENABLED: 'true', SUPABASE_URL: 'https://sb.example.supabase.co', N8N_BASE_URL: 'https://n8n.example.com' },
+      vars: { SUPABASE_URL: 'https://sb.example.supabase.co', N8N_BASE_URL: 'https://n8n.example.com' },
       httpHandler: (req) => {
+        if (req.url.includes('instaops_get_runtime_settings')) {
+          return { statusCode: 200, body: [{ scheduling_enabled: true, live_publish_enabled: true }] };
+        }
         if (req.url.includes('instaops_claim_due_scheduled_posts')) {
           return {
             statusCode: 200,
@@ -926,16 +1152,27 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
     assert.equal(releasedOn4xx, true);
   });
 
-  it('W04: enforces authoritative deletion lock before ANY Cloudinary /destroy (conflict blocks; direct calls acquire & release; partial failure returns ok=true)', async () => {
+  it('W04: enforces DB live_delete_enabled + deletion lock before Cloudinary /destroy; direct calls acquire, finalize RPC & release', async () => {
     const w04 = loadWorkflow('n8n/workflows/04-content-management.json');
     const vars = {
       N8N_WEBHOOK_SECRET: TEST_SECRET,
-      LIVE_DELETE_ENABLED: 'true',
       SUPABASE_URL: 'https://sb.example.supabase.co',
       CLOUDINARY_CLOUD_NAME: 'demo',
-      CLOUDINARY_API_KEY: TEST_CLD_KEY,
-      CLOUDINARY_API_SECRET: TEST_CLD_SECRET,
     };
+
+    // Fail-closed 409 when DB live_delete_enabled=false even if request attempts spoof
+    const blockedGateRes = await runWorkflowDag(w04, {
+      vars,
+      webhookHeaders: { 'x-dashboard-secret': TEST_SECRET },
+      webhookBody: { action: 'DELETE_MEDIA', post_uuid: TEST_POST_UUID, post_id: 'IG-DEL-GATE', confirm: true, live_delete_enabled: true },
+      httpHandler: (req) => {
+        if (req.url.includes('instaops_get_runtime_settings')) {
+          return { statusCode: 200, body: [{ live_publish_enabled: false, live_delete_enabled: false, scheduling_enabled: false }] };
+        }
+        throw new Error('Must stop before post read or Cloudinary when DB live_delete_enabled=false');
+      },
+    });
+    assert.equal(blockedGateRes.responded[0]?.statusCode, 409);
 
     // Conflict with active PUBLISH lock MUST stop before any Cloudinary /destroy
     const conflictRes = await runWorkflowDag(w04, {
@@ -943,6 +1180,7 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
       webhookHeaders: { 'x-dashboard-secret': TEST_SECRET },
       webhookBody: { action: 'DELETE_MEDIA', post_uuid: TEST_POST_UUID, post_id: 'IG-DEL-1', confirm: true },
       httpHandler: (req) => {
+        if (req.url.includes('instaops_get_runtime_settings')) return { statusCode: 200, body: [{ live_delete_enabled: true }] };
         if (req.url.includes('/instaops_posts?')) return { statusCode: 200, body: [{ id: TEST_POST_UUID, post_id: 'IG-DEL-1', status: 'READY' }] };
         if (req.url.includes('/instaops_media_assets?')) {
           return { statusCode: 200, body: [{ post_uuid: TEST_POST_UUID, internal_asset_id: 'ast_1', cloudinary_public_id: 'instaops-v2/IG-DEL-1/item_0', resource_type: 'image', delivery_type: 'upload', storage_status: 'ACTIVE' }] };
@@ -957,13 +1195,14 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
     assert.equal(conflictRes.httpCalls.some((c) => c.url.includes('api.cloudinary.com')), false);
     assert.equal(asRecord(conflictRes.responded[0]?.body).ok, false);
 
-    // Direct webhook call with no pre-lock MUST claim lock via instaops_acquire_lock BEFORE Cloudinary /destroy and release it after
+    // Direct webhook call MUST acquire lock BEFORE Cloudinary /destroy (Basic Auth), call instaops_finalize_deletion, and release lock
     const directEvents: string[] = [];
     const directRes = await runWorkflowDag(w04, {
       vars,
       webhookHeaders: { 'x-dashboard-secret': TEST_SECRET },
       webhookBody: { action: 'DELETE_POST', post_uuid: TEST_POST_UUID, post_id: 'IG-DEL-2', confirm: true },
       httpHandler: (req) => {
+        if (req.url.includes('instaops_get_runtime_settings')) return { statusCode: 200, body: [{ live_delete_enabled: true }] };
         if (req.url.includes('/instaops_posts?')) return { statusCode: 200, body: [{ id: TEST_POST_UUID, post_id: 'IG-DEL-2', status: 'DRAFT' }] };
         if (req.url.includes('/instaops_media_assets?')) {
           return {
@@ -982,16 +1221,16 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
         }
         if (req.url.includes('/destroy')) {
           directEvents.push('DESTROY');
-          assert.ok(req.formBody, 'Cloudinary destroy requires form-urlencoded params');
-          assert.equal(
-            cloudinarySig(req.formBody, TEST_CLD_SECRET),
-            req.formBody.signature,
-            'Cloudinary destroy signature must match sent form parameters (including type)',
-          );
+          assert.ok(req.credentials.httpBasicAuth, 'Cloudinary destroy must bind httpBasicAuth');
+          assert.ok(req.formBody, 'Cloudinary destroy sends form-urlencoded params');
           if (req.url.includes('/video/')) {
             return { statusCode: 500, body: { error: { message: 'cld err' } } };
           }
           return { statusCode: 200, body: { result: 'ok' } };
+        }
+        if (req.url.includes('/rpc/instaops_finalize_deletion')) {
+          directEvents.push('FINALIZE_DELETION');
+          return { statusCode: 200, body: [{ ok: true, status: 'FAILED' }] };
         }
         if (req.url.includes('/rpc/instaops_release_lock')) {
           directEvents.push('RELEASE_LOCK');
@@ -1000,14 +1239,13 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
         return { statusCode: 200, body: [] };
       },
     });
-    assert.deepEqual(directEvents, ['ACQUIRE_LOCK', 'DESTROY', 'DESTROY', 'RELEASE_LOCK']);
+    assert.deepEqual(directEvents, ['ACQUIRE_LOCK', 'DESTROY', 'DESTROY', 'FINALIZE_DELETION', 'RELEASE_LOCK']);
     const bodyOut = asRecord(directRes.responded[0]?.body);
     assert.equal(bodyOut.ok, true);
     assert.equal(bodyOut.partial_failure, true);
     assert.equal(bodyOut.status, 'FAILED');
     assert.equal((bodyOut.outcomes as JsonRecord[]).length, 2);
 
-    // Next.js caller lock handoff (OWNER_VERIFIED) syncs 4 tabs + handles empty sheet confirmation cleanly
     const syncEmpty = await runWorkflowDag(w04, {
       vars,
       webhookHeaders: { 'x-dashboard-secret': TEST_SECRET },
@@ -1017,12 +1255,15 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
         assert.equal(call.inputJson.error_message, "'=CMD()");
         return [];
       },
-      httpHandler: () => ({ statusCode: 200, body: [] }),
+      httpHandler: (req) => {
+        if (req.url.includes('instaops_get_runtime_settings')) return { statusCode: 200, body: [{ live_delete_enabled: false }] };
+        return { statusCode: 200, body: [] };
+      },
     });
     assert.equal(asRecord(syncEmpty.responded[0]?.body).synced, false);
   });
 
-  it('W05: removes list[0] fallback completely — retains VERIFY_MANUALLY on ambiguous/empty caption and verifies exact 1-of-1 match', async () => {
+  it('W05: returns CHECK_CONNECTIONS runtime gates, never falls back to feed similarity, and verifies explicit MARK_PUBLISHED published_id', async () => {
     const w05 = loadWorkflow('n8n/workflows/05-recovery-reconciliation.json');
     const vars = {
       N8N_WEBHOOK_SECRET: TEST_SECRET,
@@ -1032,47 +1273,49 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
       GOOGLE_SHEET_ID: 'sheet_1',
     };
 
-    // CHECK_CONNECTIONS with empty Posts sheet + envBlocked=true ($vars OK)
     const healthRes = await runWorkflowDag(w05, {
       envBlocked: true,
       vars,
       webhookHeaders: { 'x-dashboard-secret': TEST_SECRET },
-      webhookBody: { action: 'CHECK_CONNECTIONS' },
+      webhookBody: { action: 'CHECK_CONNECTIONS', request_id: 'req_hc_1' },
       sheetsHandler: () => [],
       httpHandler: (req) => {
         if (req.url.includes('instaops_verify_health_and_rpc')) {
           return { statusCode: 200, body: [{ schema_ok: true, rls_ok: true, anon_revoked_ok: true, atomic_rpc_ok: true, detail: 'ok' }] };
         }
+        if (req.url.includes('instaops_get_runtime_settings')) {
+          return { statusCode: 200, body: [{ live_publish_enabled: false, live_delete_enabled: false, scheduling_enabled: false, updated_by: 'migration' }] };
+        }
         if (req.url.includes('/usage')) {
           assert.ok(req.credentials.httpBasicAuth, 'Cloudinary /usage must bind httpBasicAuth');
           return { statusCode: 200, body: { plan: 'Free', resources: 5 } };
         }
-        return { statusCode: 200, body: { id: TEST_IG_ID, username: 'instaops_demo' } };
+        return { statusCode: 200, body: { id: TEST_IG_ID, username: 'vikas.sphere' } };
       },
     });
-    assert.equal(asRecord(asRecord(asRecord(healthRes.responded[0]?.body).services).supabase).ok, true);
-    assert.equal(asRecord(asRecord(asRecord(healthRes.responded[0]?.body).services).n8nEnv).ok, true);
+    const hcBody = asRecord(healthRes.responded[0]?.body);
+    assert.equal(asRecord(asRecord(hcBody.services).supabase).ok, true);
+    assert.equal(asRecord(asRecord(hcBody.services).n8nEnv).ok, true);
+    assert.equal(asRecord(asRecord(hcBody.services).n8nEnv).settingsAvailable, true);
+    assert.equal(asRecord(asRecord(hcBody.services).n8nEnv).livePublishEnabled, false);
 
-    // Ambiguous caption (2 matching items on IG feed) MUST NOT pick list[0] -> retains VERIFY_MANUALLY
-    const ambiguousRes = await runWorkflowDag(w05, {
+    // Without persisted published_id, even exact caption match MUST retain VERIFY_MANUALLY (zero feed-similarity guessing)
+    const noPersistedIdRes = await runWorkflowDag(w05, {
       vars,
       webhookHeaders: { 'x-dashboard-secret': TEST_SECRET },
-      webhookBody: { action: 'VERIFY_PUBLICATION', post_uuid: TEST_POST_UUID, post_id: 'IG-REC-AMB' },
+      webhookBody: { action: 'VERIFY_PUBLICATION', post_uuid: TEST_POST_UUID, post_id: 'IG-REC-NOPUB' },
       httpHandler: (req) => {
         if (req.url.includes('/instaops_posts?id=eq.')) {
-          return { statusCode: 200, body: [{ id: TEST_POST_UUID, post_id: 'IG-REC-AMB', ig_user_id: TEST_IG_ID, media_type: 'IMAGE', container_id: 'cont_1', caption: 'Repeated Title', status: 'VERIFY_MANUALLY' }] };
+          return { statusCode: 200, body: [{ id: TEST_POST_UUID, post_id: 'IG-REC-NOPUB', ig_user_id: TEST_IG_ID, media_type: 'REEL', container_id: 'cont_ok', caption: 'Unique Launch Reel', status: 'VERIFY_MANUALLY' }] };
         }
         if (req.url.includes('/instaops_accounts?')) return { statusCode: 200, body: [{ ig_user_id: TEST_IG_ID, enabled: true }] };
-        if (req.url.includes(`/${TEST_IG_ID}?fields=id,username`)) return { statusCode: 200, body: { id: TEST_IG_ID, username: 'instaops_demo' } };
-        if (req.url.includes('/cont_1?')) return { statusCode: 200, body: { id: 'cont_1', status_code: 'PUBLISHED' } };
+        if (req.url.includes(`/${TEST_IG_ID}?fields=id,username`)) return { statusCode: 200, body: { id: TEST_IG_ID, username: 'vikas.sphere' } };
+        if (req.url.includes('/cont_ok?')) return { statusCode: 200, body: { id: 'cont_ok', status_code: 'PUBLISHED' } };
         if (req.url.includes(`/${TEST_IG_ID}/media?`)) {
           return {
             statusCode: 200,
             body: {
-              data: [
-                { id: 'ig_pub_1', caption: 'Repeated Title', media_type: 'IMAGE', permalink: 'https://instagram.com/p/1/' },
-                { id: 'ig_pub_2', caption: 'Repeated Title', media_type: 'IMAGE', permalink: 'https://instagram.com/p/2/' },
-              ],
+              data: [{ id: 'ig_similar_only', caption: 'Unique Launch Reel', media_type: 'VIDEO', permalink: 'https://instagram.com/reel/Similar/' }],
             },
           };
         }
@@ -1080,65 +1323,39 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
         return { statusCode: 200, body: [] };
       },
     });
-    assert.equal(asRecord(ambiguousRes.responded[0]?.body).verified, false);
-    assert.equal(asRecord(ambiguousRes.responded[0]?.body).status, 'VERIFY_MANUALLY');
+    assert.equal(asRecord(noPersistedIdRes.responded[0]?.body).verified, false);
+    assert.equal(asRecord(noPersistedIdRes.responded[0]?.body).status, 'VERIFY_MANUALLY');
 
-    // Empty caption MUST NOT match feed item without published_id
-    const emptyCaptionRes = await runWorkflowDag(w05, {
-      vars,
-      webhookHeaders: { 'x-dashboard-secret': TEST_SECRET },
-      webhookBody: { action: 'VERIFY_PUBLICATION', post_uuid: TEST_POST_UUID, post_id: 'IG-REC-EMPTY' },
-      httpHandler: (req) => {
-        if (req.url.includes('/instaops_posts?id=eq.')) {
-          return { statusCode: 200, body: [{ id: TEST_POST_UUID, post_id: 'IG-REC-EMPTY', ig_user_id: TEST_IG_ID, media_type: 'REEL', container_id: 'cont_e', caption: '', status: 'VERIFY_MANUALLY' }] };
-        }
-        if (req.url.includes('/instaops_accounts?')) return { statusCode: 200, body: [{ ig_user_id: TEST_IG_ID, enabled: true }] };
-        if (req.url.includes(`/${TEST_IG_ID}?fields=id,username`)) return { statusCode: 200, body: { id: TEST_IG_ID, username: 'instaops_demo' } };
-        if (req.url.includes('/cont_e?')) return { statusCode: 200, body: { id: 'cont_e', status_code: 'PUBLISHED' } };
-        if (req.url.includes(`/${TEST_IG_ID}/media?`)) {
-          return { statusCode: 200, body: { data: [{ id: 'ig_pub_x', caption: '', media_type: 'VIDEO' }] } };
-        }
-        return { statusCode: 200, body: [] };
-      },
-    });
-    assert.equal(asRecord(emptyCaptionRes.responded[0]?.body).verified, false);
-
-    // Unambiguous 1-of-1 match promotes to PUBLISHED + clears lock
+    // MARK_PUBLISHED with operator-supplied numeric published_id matching destination account & media_type -> PUBLISHED + lock cleared
     let clearedLock = false;
-    const exactRes = await runWorkflowDag(w05, {
+    const explicitOkRes = await runWorkflowDag(w05, {
       vars,
       webhookHeaders: { 'x-dashboard-secret': TEST_SECRET },
-      webhookBody: { action: 'VERIFY_PUBLICATION', post_uuid: TEST_POST_UUID, post_id: 'IG-REC-OK' },
+      webhookBody: { action: 'VERIFY_PUBLICATION', post_uuid: TEST_POST_UUID, post_id: 'IG-REC-OK', resolution: 'MARK_PUBLISHED', published_id: '18044229100991122' },
       httpHandler: (req) => {
         if (req.url.includes('/instaops_posts?id=eq.')) {
-          return { statusCode: 200, body: [{ id: TEST_POST_UUID, post_id: 'IG-REC-OK', ig_user_id: TEST_IG_ID, media_type: 'REEL', container_id: 'cont_ok', caption: 'Unique Launch Reel', created_at: '2026-11-27T00:00:00Z', status: 'VERIFY_MANUALLY' }] };
+          return { statusCode: 200, body: [{ id: TEST_POST_UUID, post_id: 'IG-REC-OK', ig_user_id: TEST_IG_ID, media_type: 'REEL', status: 'VERIFY_MANUALLY' }] };
         }
         if (req.url.includes('/instaops_accounts?')) return { statusCode: 200, body: [{ ig_user_id: TEST_IG_ID, enabled: true }] };
-        if (req.url.includes(`/${TEST_IG_ID}?fields=id,username`)) return { statusCode: 200, body: { id: TEST_IG_ID, username: 'instaops_demo' } };
-        if (req.url.includes('/cont_ok?')) return { statusCode: 200, body: { id: 'cont_ok', status_code: 'PUBLISHED' } };
-        if (req.url.includes(`/${TEST_IG_ID}/media?`)) {
+        if (req.url.includes(`/${TEST_IG_ID}?fields=id,username`)) return { statusCode: 200, body: { id: TEST_IG_ID, username: 'vikas.sphere' } };
+        if (req.url.includes('/18044229100991122?')) {
           return {
             statusCode: 200,
-            body: {
-              data: [
-                { id: 'ig_other_used', caption: 'Unique Launch Reel', media_type: 'VIDEO', timestamp: '2026-11-27T00:01:00Z' },
-                { id: 'ig_exact_1', caption: 'Unique Launch Reel', media_type: 'VIDEO', timestamp: '2026-11-27T00:02:00Z', permalink: 'https://instagram.com/reel/Exact1/' },
-              ],
-            },
+            body: { id: '18044229100991122', media_type: 'VIDEO', owner: { id: TEST_IG_ID }, permalink: 'https://instagram.com/reel/Exact1/' },
           };
         }
-        if (req.url.includes('published_id=neq.')) return { statusCode: 200, body: [{ id: TEST_OTHER_UUID, published_id: 'ig_other_used' }] };
+        if (req.url.includes('instaops_posts?published_id=eq.')) return { statusCode: 200, body: [] };
         if (req.url.includes('/instaops_job_locks?') && req.method === 'DELETE') {
           clearedLock = true;
           return { statusCode: 200, body: [] };
         }
-        return { statusCode: 200, body: {} };
+        return { statusCode: 200, body: [{}] };
       },
     });
-    const exactBody = asRecord(exactRes.responded[0]?.body);
+    const exactBody = asRecord(explicitOkRes.responded[0]?.body);
     assert.equal(exactBody.verified, true);
     assert.equal(exactBody.status, 'PUBLISHED');
-    assert.equal(exactBody.published_id, 'ig_exact_1');
+    assert.equal(exactBody.published_id, '18044229100991122');
     assert.equal(clearedLock, true);
   });
 
@@ -1147,20 +1364,17 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
     const w05 = loadWorkflow('n8n/workflows/05-recovery-reconciliation.json');
     const vars = {
       N8N_WEBHOOK_SECRET: TEST_SECRET,
-      LIVE_DELETE_ENABLED: 'true',
       SUPABASE_URL: 'https://sb.example.supabase.co',
       CLOUDINARY_CLOUD_NAME: 'demo',
-      CLOUDINARY_API_KEY: TEST_CLD_KEY,
-      CLOUDINARY_API_SECRET: TEST_CLD_SECRET,
       INSTAGRAM_USER_ID: TEST_IG_ID,
     };
 
-    // W04 blocks direct webhook delete when unresolved PUBLISH (OUTCOME_UNKNOWN) job exists
     const unresolvedRes = await runWorkflowDag(w04, {
       vars,
       webhookHeaders: { 'x-dashboard-secret': TEST_SECRET },
       webhookBody: { action: 'DELETE_MEDIA', post_uuid: TEST_POST_UUID, post_id: 'IG-DEL-JOB', confirm: true },
       httpHandler: (req) => {
+        if (req.url.includes('instaops_get_runtime_settings')) return { statusCode: 200, body: [{ live_delete_enabled: true }] };
         if (req.url.includes('/instaops_posts?')) return { statusCode: 200, body: [{ id: TEST_POST_UUID, post_id: 'IG-DEL-JOB', status: 'READY' }] };
         if (req.url.includes('/instaops_media_assets?')) {
           return { statusCode: 200, body: [{ post_uuid: TEST_POST_UUID, internal_asset_id: 'ast_1', cloudinary_public_id: 'instaops-v2/IG-DEL-JOB/item_0', resource_type: 'image', delivery_type: 'upload', storage_status: 'ACTIVE' }] };
@@ -1173,12 +1387,12 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
     assert.equal(unresolvedRes.httpCalls.some((c) => c.url.includes('instaops_acquire_lock') || c.url.includes('/destroy')), false);
     assert.equal(asRecord(unresolvedRes.responded[0]?.body).ok, false);
 
-    // W04 rejects wrong caller lock_owner, and accepts matching caller lock_owner without claiming or releasing it
     const wrongOwnerRes = await runWorkflowDag(w04, {
       vars,
       webhookHeaders: { 'x-dashboard-secret': TEST_SECRET },
       webhookBody: { action: 'DELETE_MEDIA', post_uuid: TEST_POST_UUID, post_id: 'IG-DEL-OWN', confirm: true, lock_key: `post:${TEST_POST_UUID}`, lock_owner: 'wrong:owner' },
       httpHandler: (req) => {
+        if (req.url.includes('instaops_get_runtime_settings')) return { statusCode: 200, body: [{ live_delete_enabled: true }] };
         if (req.url.includes('/instaops_posts?')) return { statusCode: 200, body: [{ id: TEST_POST_UUID, post_id: 'IG-DEL-OWN', status: 'READY' }] };
         if (req.url.includes('/instaops_media_assets?')) {
           return { statusCode: 200, body: [{ post_uuid: TEST_POST_UUID, internal_asset_id: 'ast_1', cloudinary_public_id: 'instaops-v2/IG-DEL-OWN/item_0', resource_type: 'image', delivery_type: 'upload', storage_status: 'ACTIVE' }] };
@@ -1196,6 +1410,7 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
       webhookHeaders: { 'x-dashboard-secret': TEST_SECRET },
       webhookBody: { action: 'DELETE_MEDIA', post_uuid: TEST_POST_UUID, post_id: 'IG-DEL-OWN', confirm: true, lock_key: `post:${TEST_POST_UUID}`, lock_owner: 'next:real_owner' },
       httpHandler: (req) => {
+        if (req.url.includes('instaops_get_runtime_settings')) return { statusCode: 200, body: [{ live_delete_enabled: true }] };
         if (req.url.includes('/instaops_posts?')) return { statusCode: 200, body: [{ id: TEST_POST_UUID, post_id: 'IG-DEL-OWN', status: 'READY' }] };
         if (req.url.includes('/instaops_media_assets?')) {
           return { statusCode: 200, body: [{ post_uuid: TEST_POST_UUID, internal_asset_id: 'ast_1', cloudinary_public_id: 'instaops-v2/IG-DEL-OWN/item_0', resource_type: 'image', delivery_type: 'upload', storage_status: 'ACTIVE' }] };
@@ -1213,7 +1428,6 @@ describe('Real n8n Workflow DAG Execution (Zero helpers.httpRequest / Zero fetch
     assert.equal(callerLockTouched, false);
     assert.equal(asRecord(okOwnerRes.responded[0]?.body).status, 'MEDIA_DELETED');
 
-    // W05 explicit published_id verification rejects mismatched owner.id -> retains VERIFY_MANUALLY
     const wrongIgOwnerRes = await runWorkflowDag(w05, {
       vars,
       webhookHeaders: { 'x-dashboard-secret': TEST_SECRET },

@@ -33,7 +33,7 @@ export function OverviewView() {
   const handleTest = async () => {
     setTesting(true);
     try {
-      await testConnections();
+      await testConnections(true);
     } finally {
       setTesting(false);
     }
@@ -56,7 +56,7 @@ export function OverviewView() {
             Recovery ({overview.stats.failed + overview.stats.verifyManually})
           </Link>
           <button type="button" className="btn" onClick={() => void handleTest()} disabled={testing}>
-            {testing ? 'Checking...' : 'Test Connections'}
+            {testing ? 'Refreshing...' : 'Refresh Diagnostics (?refresh=1)'}
           </button>
         </div>
       </div>
@@ -195,11 +195,27 @@ export function OverviewView() {
 
         <section className="panel">
           <div className="panel-header">
-            <h2 className="panel-title">Service Connection Matrix</h2>
+            <div>
+              <h2 className="panel-title">Service Connection Matrix</h2>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                Gates: Publish {overview.flags.livePublishEnabled ? 'ON' : 'OFF'} · Delete{' '}
+                {overview.flags.liveDeleteEnabled ? 'ON' : 'OFF'} · Schedule{' '}
+                {overview.flags.schedulingEnabled ? 'ON' : 'OFF'}
+                {overview.readiness?.n8nDiagnosticStatus
+                  ? ` · n8n=${overview.readiness.n8nDiagnosticStatus}`
+                  : ''}
+                {overview.diagnosticsFromCache ? ' (cached)' : ''}
+              </div>
+            </div>
             <Link href="/settings" className="btn btn-sm">
               Diagnostics
             </Link>
           </div>
+          {overview.readiness?.workflowReports?.some((w) => w.required && !w.integrityOk) && (
+            <div className="banner banner-warning" style={{ marginBottom: 10, fontSize: 12 }}>
+              Workflow integrity issues detected ({overview.readiness.workflowReports.filter((w) => w.required && !w.integrityOk).map((w) => w.role).join(', ')}). Check Diagnostics in Settings before live runs.
+            </div>
+          )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {overview.connections.map((c) => (
               <div
@@ -215,7 +231,14 @@ export function OverviewView() {
                 }}
               >
                 <div>
-                  <div style={{ fontWeight: 600 }}>{c.name}</div>
+                  <div style={{ fontWeight: 600 }}>
+                    {c.name}{' '}
+                    {c.diagnosticState && c.diagnosticState !== 'connected' ? (
+                      <span className="mono" style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                        [{c.diagnosticState}{c.httpStatus ? ` · HTTP ${c.httpStatus}` : ''}]
+                      </span>
+                    ) : null}
+                  </div>
                   <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>{c.detail}</div>
                 </div>
                 <ConnectionBadge status={c.status} />

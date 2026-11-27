@@ -244,6 +244,23 @@ INSERT INTO public.instaops_accounts (account_key, account_label, ig_user_id, en
 VALUES ('A', '@vikas.sphere', '17841453414532595', true)
 ON CONFLICT (account_key) DO NOTHING;
 
+CREATE TABLE IF NOT EXISTS public.instaops_runtime_settings (
+  setting_key TEXT PRIMARY KEY CHECK (setting_key = 'default'),
+  live_publish_enabled BOOLEAN NOT NULL DEFAULT false,
+  live_delete_enabled BOOLEAN NOT NULL DEFAULT false,
+  scheduling_enabled BOOLEAN NOT NULL DEFAULT false,
+  updated_by TEXT NOT NULL DEFAULT 'system',
+  change_reason TEXT NOT NULL DEFAULT '',
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO public.instaops_runtime_settings (
+  setting_key, live_publish_enabled, live_delete_enabled, scheduling_enabled, updated_by, change_reason
+) VALUES (
+  'default', false, false, false, 'install_fresh', 'Default fail-closed safety gates'
+)
+ON CONFLICT (setting_key) DO NOTHING;
+
 ALTER TABLE public.instaops_posts
   ADD COLUMN IF NOT EXISTS child_container_ids JSONB NOT NULL DEFAULT '[]'::jsonb;
 
@@ -342,6 +359,11 @@ CREATE TRIGGER trg_instaops_jobs_updated_at
 DROP TRIGGER IF EXISTS trg_instaops_sync_queue_updated_at ON public.instaops_sync_queue;
 CREATE TRIGGER trg_instaops_sync_queue_updated_at
   BEFORE UPDATE ON public.instaops_sync_queue
+  FOR EACH ROW EXECUTE FUNCTION public.instaops_touch_updated_at();
+
+DROP TRIGGER IF EXISTS trg_instaops_runtime_settings_updated_at ON public.instaops_runtime_settings;
+CREATE TRIGGER trg_instaops_runtime_settings_updated_at
+  BEFORE UPDATE ON public.instaops_runtime_settings
   FOR EACH ROW EXECUTE FUNCTION public.instaops_touch_updated_at();
 
 -- -----------------------------------------------------------------------------
@@ -533,6 +555,7 @@ BEGIN
      SET expires_at = NOW() + (v_lease::TEXT || ' seconds')::INTERVAL
    WHERE lock_key = p_lock_key
      AND owner_id = p_owner_id
+     AND public.instaops_job_locks.expires_at >= NOW()
    RETURNING public.instaops_job_locks.expires_at INTO v_exp;
 
   IF FOUND THEN
@@ -842,7 +865,23 @@ DECLARE
   v_indices INTEGER[] := ARRAY[]::INTEGER[];
   v_asset_row public.instaops_media_assets%ROWTYPE;
   v_new_rev INTEGER;
+  v_lock_owner TEXT;
+  v_lock_expires TIMESTAMPTZ;
 BEGIN
+  IF COALESCE(p_lock_key, '') <> '' OR COALESCE(p_lock_owner, '') <> '' THEN
+    IF COALESCE(p_lock_key, '') = '' OR COALESCE(p_lock_owner, '') = '' THEN
+      RAISE EXCEPTION 'Both p_lock_key and p_lock_owner are required when finalizing extraction with lock verification';
+    END IF;
+    SELECT jl.owner_id, jl.expires_at
+      INTO v_lock_owner, v_lock_expires
+      FROM public.instaops_job_locks AS jl
+     WHERE jl.lock_key = p_lock_key
+     FOR UPDATE;
+    IF NOT FOUND OR v_lock_owner <> p_lock_owner OR v_lock_expires < NOW() THEN
+      RAISE EXCEPTION 'Cannot finalize extraction: active lock % missing or expired for owner %', p_lock_key, p_lock_owner;
+    END IF;
+  END IF;
+
   SELECT * INTO v_post FROM public.instaops_posts AS p WHERE p.id = p_post_uuid AND p.deleted_at IS NULL FOR UPDATE;
   IF NOT FOUND THEN
     RAISE EXCEPTION 'Active post % not found for extraction finalization', p_post_uuid;
@@ -1034,7 +1073,23 @@ DECLARE
   v_active_left INTEGER := 0;
   v_fail JSONB;
   v_asset public.instaops_media_assets%ROWTYPE;
+  v_lock_owner TEXT;
+  v_lock_expires TIMESTAMPTZ;
 BEGIN
+  IF COALESCE(p_lock_key, '') <> '' OR COALESCE(p_lock_owner, '') <> '' THEN
+    IF COALESCE(p_lock_key, '') = '' OR COALESCE(p_lock_owner, '') = '' THEN
+      RAISE EXCEPTION 'Both p_lock_key and p_lock_owner are required when finalizing deletion with lock verification';
+    END IF;
+    SELECT jl.owner_id, jl.expires_at
+      INTO v_lock_owner, v_lock_expires
+      FROM public.instaops_job_locks AS jl
+     WHERE jl.lock_key = p_lock_key
+     FOR UPDATE;
+    IF NOT FOUND OR v_lock_owner <> p_lock_owner OR v_lock_expires < NOW() THEN
+      RAISE EXCEPTION 'Cannot finalize deletion: active lock % missing or expired for owner %', p_lock_key, p_lock_owner;
+    END IF;
+  END IF;
+
   SELECT * INTO v_post FROM public.instaops_posts AS p WHERE p.id = p_post_uuid FOR UPDATE;
   IF NOT FOUND THEN
     RAISE EXCEPTION 'Post % not found', p_post_uuid;
@@ -1297,6 +1352,106 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION public.instaops_get_runtime_settings()
+RETURNS TABLE (
+  setting_key TEXT,
+  live_publish_enabled BOOLEAN,
+  live_delete_enabled BOOLEAN,
+  scheduling_enabled BOOLEAN,
+  updated_by TEXT,
+  change_reason TEXT,
+  updated_at TIMESTAMPTZ
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+BEGIN
+  INSERT INTO public.instaops_runtime_settings (
+    setting_key, live_publish_enabled, live_delete_enabled, scheduling_enabled, updated_by, change_reason
+  ) VALUES (
+    'default', false, false, false, 'auto_seed', 'Auto-initialized safe-disabled runtime settings'
+  )
+  ON CONFLICT ON CONSTRAINT instaops_runtime_settings_pkey DO NOTHING;
+
+  RETURN QUERY
+  SELECT
+    rs.setting_key,
+    rs.live_publish_enabled,
+    rs.live_delete_enabled,
+    rs.scheduling_enabled,
+    rs.updated_by,
+    rs.change_reason,
+    rs.updated_at
+  FROM public.instaops_runtime_settings AS rs
+  WHERE rs.setting_key = 'default';
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.instaops_update_runtime_settings(
+  p_live_publish_enabled BOOLEAN DEFAULT NULL,
+  p_live_delete_enabled BOOLEAN DEFAULT NULL,
+  p_scheduling_enabled BOOLEAN DEFAULT NULL,
+  p_updated_by TEXT DEFAULT 'operator',
+  p_change_reason TEXT DEFAULT ''
+)
+RETURNS public.instaops_runtime_settings
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  v_prev public.instaops_runtime_settings%ROWTYPE;
+  v_next public.instaops_runtime_settings%ROWTYPE;
+BEGIN
+  INSERT INTO public.instaops_runtime_settings (
+    setting_key, live_publish_enabled, live_delete_enabled, scheduling_enabled, updated_by, change_reason
+  ) VALUES (
+    'default', false, false, false, 'auto_seed', 'Auto-initialized safe-disabled runtime settings'
+  )
+  ON CONFLICT (setting_key) DO NOTHING;
+
+  SELECT * INTO v_prev
+    FROM public.instaops_runtime_settings
+   WHERE setting_key = 'default'
+   FOR UPDATE;
+
+  UPDATE public.instaops_runtime_settings
+     SET live_publish_enabled = COALESCE(p_live_publish_enabled, live_publish_enabled),
+         live_delete_enabled = COALESCE(p_live_delete_enabled, live_delete_enabled),
+         scheduling_enabled = COALESCE(p_scheduling_enabled, scheduling_enabled),
+         updated_by = COALESCE(NULLIF(p_updated_by, ''), 'operator'),
+         change_reason = COALESCE(p_change_reason, '')
+   WHERE setting_key = 'default'
+   RETURNING * INTO v_next;
+
+  INSERT INTO public.instaops_audit_events (
+    post_uuid, entity_type, entity_id, action, actor, details
+  ) VALUES (
+    NULL,
+    'SYSTEM',
+    'runtime_settings:default',
+    'UPDATE_RUNTIME_SETTINGS',
+    COALESCE(NULLIF(p_updated_by, ''), 'operator'),
+    pg_catalog.jsonb_build_object(
+      'reason', COALESCE(p_change_reason, ''),
+      'previous', pg_catalog.jsonb_build_object(
+        'live_publish_enabled', v_prev.live_publish_enabled,
+        'live_delete_enabled', v_prev.live_delete_enabled,
+        'scheduling_enabled', v_prev.scheduling_enabled
+      ),
+      'current', pg_catalog.jsonb_build_object(
+        'live_publish_enabled', v_next.live_publish_enabled,
+        'live_delete_enabled', v_next.live_delete_enabled,
+        'scheduling_enabled', v_next.scheduling_enabled
+      )
+    )
+  );
+
+  RETURN v_next;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION public.instaops_verify_health_and_rpc()
 RETURNS TABLE (
   schema_ok BOOLEAN,
@@ -1319,7 +1474,10 @@ DECLARE
   v_rpc_ok BOOLEAN := false;
   v_acq BOOLEAN := false;
   v_ren BOOLEAN := false;
+  v_exp_ren BOOLEAN := true;
   v_rel BOOLEAN := false;
+  v_rs_cnt INTEGER := 0;
+  v_rpc_err TEXT := '';
   v_probe_key TEXT := '__healthcheck__:self_test:' || substr(replace(pg_catalog.gen_random_uuid()::TEXT, '-', ''), 1, 8);
   v_probe_owner TEXT := 'health_' || substr(replace(pg_catalog.gen_random_uuid()::TEXT, '-', ''), 1, 8);
 BEGIN
@@ -1341,7 +1499,8 @@ BEGIN
        'instaops_idempotency_keys',
        'instaops_execution_logs',
        'instaops_sync_queue',
-       'instaops_audit_events'
+       'instaops_audit_events',
+       'instaops_runtime_settings'
      ]);
 
   SELECT COUNT(*) INTO v_accounts FROM public.instaops_accounts WHERE enabled = true;
@@ -1351,23 +1510,38 @@ BEGIN
       FROM public.instaops_acquire_lock(v_probe_key, NULL::UUID, 'HEALTHCHECK', 'RETRY', v_probe_owner, v_probe_owner, 30) AS al;
     SELECT rl.renewed INTO v_ren
       FROM public.instaops_renew_lock(v_probe_key, v_probe_owner, 45) AS rl;
-    SELECT public.instaops_release_lock(v_probe_key, v_probe_owner) INTO v_rel;
-    v_rpc_ok := COALESCE(v_acq, false) AND COALESCE(v_ren, false) AND COALESCE(v_rel, false);
+    UPDATE public.instaops_job_locks
+       SET expires_at = NOW() - INTERVAL '5 seconds'
+     WHERE lock_key = v_probe_key
+       AND owner_id = v_probe_owner;
+    SELECT rl.renewed INTO v_exp_ren
+      FROM public.instaops_renew_lock(v_probe_key, v_probe_owner, 45) AS rl;
+    DELETE FROM public.instaops_job_locks
+     WHERE lock_key = v_probe_key
+       AND owner_id = v_probe_owner;
+    v_rel := FOUND;
+    SELECT COUNT(*) INTO v_rs_cnt FROM public.instaops_get_runtime_settings();
+    v_rpc_ok := COALESCE(v_acq, false) AND COALESCE(v_ren, false) AND (NOT COALESCE(v_exp_ren, true)) AND COALESCE(v_rel, false) AND v_rs_cnt = 1;
   EXCEPTION WHEN OTHERS THEN
     v_rpc_ok := false;
+    v_rpc_err := SQLERRM;
   END;
 
   RETURN QUERY SELECT
-    (v_tables = 10),
-    (v_tables = 10 AND v_rls_cnt = 10),
-    (v_tables = 10 AND v_anon_open = 0),
+    (v_tables = 11),
+    (v_tables = 11 AND v_rls_cnt = 11),
+    (v_tables = 11 AND v_anon_open = 0),
     v_rpc_ok,
     v_tables,
     v_accounts,
-    ('tables=' || v_tables || '/10, rls=' || v_rls_cnt || '/10, anon_open=' || v_anon_open || ', rpc_ok=' || v_rpc_ok)::TEXT;
+    ('tables=' || v_tables || '/11, rls=' || v_rls_cnt || '/11, anon_open=' || v_anon_open || ', rpc_ok=' || v_rpc_ok
+     || CASE WHEN NOT v_rpc_ok THEN ', state=' || COALESCE(v_acq::TEXT, 'null') || '/' || COALESCE(v_ren::TEXT, 'null') || '/' || COALESCE(v_exp_ren::TEXT, 'null') || '/' || COALESCE(v_rel::TEXT, 'null') || '/rs=' || v_rs_cnt::TEXT ELSE '' END
+     || CASE WHEN v_rpc_err <> '' THEN ', err=' || v_rpc_err ELSE '' END)::TEXT;
 END;
 $$;
 
+REVOKE ALL ON FUNCTION public.instaops_get_runtime_settings() FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.instaops_update_runtime_settings(BOOLEAN, BOOLEAN, BOOLEAN, TEXT, TEXT) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.instaops_acquire_lock(TEXT, UUID, TEXT, TEXT, TEXT, TEXT, INTEGER) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.instaops_transfer_or_claim_lock(TEXT, UUID, TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.instaops_renew_lock(TEXT, TEXT, INTEGER) FROM PUBLIC, anon, authenticated;
@@ -1399,6 +1573,8 @@ GRANT EXECUTE ON FUNCTION public.instaops_soft_delete_post(UUID, TEXT) TO servic
 GRANT EXECUTE ON FUNCTION public.instaops_recover_stale_sync_jobs(INTEGER) TO service_role;
 GRANT EXECUTE ON FUNCTION public.instaops_claim_sync_batch(TEXT, INTEGER, INTEGER) TO service_role;
 GRANT EXECUTE ON FUNCTION public.instaops_verify_health_and_rpc() TO service_role;
+GRANT EXECUTE ON FUNCTION public.instaops_get_runtime_settings() TO service_role;
+GRANT EXECUTE ON FUNCTION public.instaops_update_runtime_settings(BOOLEAN, BOOLEAN, BOOLEAN, TEXT, TEXT) TO service_role;
 
 -- -----------------------------------------------------------------------------
 -- 5. Row-Level Security & Least-Privilege Grants (005_rls_and_security.sql)
@@ -1413,6 +1589,7 @@ ALTER TABLE public.instaops_idempotency_keys ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.instaops_execution_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.instaops_sync_queue ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.instaops_audit_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.instaops_runtime_settings ENABLE ROW LEVEL SECURITY;
 
 REVOKE ALL ON TABLE public.instaops_accounts FROM anon, authenticated;
 REVOKE ALL ON TABLE public.instaops_posts FROM anon, authenticated;
@@ -1424,6 +1601,7 @@ REVOKE ALL ON TABLE public.instaops_idempotency_keys FROM anon, authenticated;
 REVOKE ALL ON TABLE public.instaops_execution_logs FROM anon, authenticated;
 REVOKE ALL ON TABLE public.instaops_sync_queue FROM anon, authenticated;
 REVOKE ALL ON TABLE public.instaops_audit_events FROM anon, authenticated;
+REVOKE ALL ON TABLE public.instaops_runtime_settings FROM PUBLIC, anon, authenticated;
 
 GRANT ALL ON TABLE public.instaops_accounts TO service_role;
 GRANT ALL ON TABLE public.instaops_posts TO service_role;
@@ -1435,6 +1613,7 @@ GRANT ALL ON TABLE public.instaops_idempotency_keys TO service_role;
 GRANT ALL ON TABLE public.instaops_execution_logs TO service_role;
 GRANT ALL ON TABLE public.instaops_sync_queue TO service_role;
 GRANT ALL ON TABLE public.instaops_audit_events TO service_role;
+GRANT ALL ON TABLE public.instaops_runtime_settings TO service_role;
 
 DROP POLICY IF EXISTS "deny_client_accounts" ON public.instaops_accounts;
 CREATE POLICY "deny_client_accounts" ON public.instaops_accounts AS RESTRICTIVE FOR ALL TO anon, authenticated USING (false) WITH CHECK (false);
@@ -1485,5 +1664,10 @@ DROP POLICY IF EXISTS "deny_client_audit_events" ON public.instaops_audit_events
 CREATE POLICY "deny_client_audit_events" ON public.instaops_audit_events AS RESTRICTIVE FOR ALL TO anon, authenticated USING (false) WITH CHECK (false);
 DROP POLICY IF EXISTS "service_audit_events" ON public.instaops_audit_events;
 CREATE POLICY "service_audit_events" ON public.instaops_audit_events FOR ALL TO service_role USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "deny_client_runtime_settings" ON public.instaops_runtime_settings;
+CREATE POLICY "deny_client_runtime_settings" ON public.instaops_runtime_settings AS RESTRICTIVE FOR ALL TO anon, authenticated USING (false) WITH CHECK (false);
+DROP POLICY IF EXISTS "service_runtime_settings" ON public.instaops_runtime_settings;
+CREATE POLICY "service_runtime_settings" ON public.instaops_runtime_settings FOR ALL TO service_role USING (true) WITH CHECK (true);
 
 COMMIT;

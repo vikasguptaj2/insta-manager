@@ -5,6 +5,7 @@ import { ROOT_DIR, loadServerModule } from './_env.mjs';
 const { assertVerifiedWorkflowExport } = loadServerModule('lib/n8n/workflow-safety.js');
 
 const WORKFLOW_MAP = [
+  ['W00', 'n8n/workflows/00-manual-credential-check.json'],
   ['W01', 'n8n/workflows/01-extract-upload.json'],
   ['W02', 'n8n/workflows/02-publish-content.json'],
   ['W03', 'n8n/workflows/03-scheduled-runner.json'],
@@ -17,5 +18,10 @@ for (const [role, rel] of WORKFLOW_MAP) {
   const full = path.join(ROOT_DIR, rel);
   const json = JSON.parse(fs.readFileSync(full, 'utf8'));
   assertVerifiedWorkflowExport(role, json);
-  console.log(`[PASS] ${role}: ${json.name} (${json.nodes.length} nodes, active=${json.active})`);
+  const webhookPaths = (json.nodes || [])
+    .filter((n) => n.type === 'n8n-nodes-base.webhook')
+    .map((n) => String(n.parameters?.path || '').trim())
+    .filter(Boolean);
+  const pathText = webhookPaths.length > 0 ? `, webhooks=[${webhookPaths.join(', ')}]` : '';
+  console.log(`[PASS] ${role}: ${json.name} (${json.nodes.length} nodes, active=${json.active}${pathText})`);
 }

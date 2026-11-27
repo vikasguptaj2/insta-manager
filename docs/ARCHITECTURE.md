@@ -5,17 +5,19 @@ Browser UI (Next.js App Router on 127.0.0.1:3000 — Anon/Public Keys Only)
    |  (Host Lock + Same-Origin CSRF + Rate Limits + Typed Boundary Validation)
    v
 Next.js BFF API Layer (/api/* — Server-Only Service Role Client)
-   |-- Primary Database: Supabase PostgreSQL (`public.instaops_*` + RLS + SECURITY DEFINER RPCs)
-   |-- Canonical Locks: `post:<uuid>` via `instaops_acquire_lock`, `instaops_transfer_or_claim_lock`, `instaops_renew_lock`, `instaops_release_lock`
+   |-- Primary Database: Supabase PostgreSQL (`public.instaops_*` + `instaops_runtime_settings` + RLS + SECURITY DEFINER RPCs)
+   |-- Canonical Locks: `post:<uuid>` via `instaops_acquire_lock`, `instaops_transfer_or_claim_lock`, `instaops_renew_lock` (`expires_at >= NOW()`), `instaops_release_lock`
    |-- Pre-Dispatch Approval & Jobs: `instaops_approve_post_revision` + `QUEUED` job persisted BEFORE webhook dispatch
+   |-- Deep Diagnostics: 45s default timeout, coalesced probes + 15s cache (`?refresh=1` bypass), workflow duplicate-canvas/conflict inspection
    |-- Outbox Queue Worker (`/api/sync`) -> `instaops_recover_stale_sync_jobs` + `instaops_claim_sync_batch` -> W04 `SYNC_RECORD`
    v
-Online n8n Server (https://137.23.61.127.sslip.io) — Workflows W01..W05 (Native HTTP Request + Wait Nodes)
-   |-- W01: Atomic lock transfer -> Downloader (https://ig-dowloader-nnnn.vercel.app/api/n8n/resolve) -> Cloudinary (`instaops-v2/`) -> `instaops_finalize_extraction` (`DRAFT`)
-   |-- W02: `LIVE_PUBLISH_ENABLED` gate -> Supabase DB assets + revision OR-check -> Meta Graph v22.0 (1..10 `WAIT`-polled Child+Parent + single `media_publish` + pre-permalink `published_id` save)
-   |-- W03: Cron Scheduler -> Atomic `instaops_claim_due_scheduled_posts` (`FOR UPDATE SKIP LOCKED`) -> W02 lock handoff
-   |-- W04: Multi-tab Sheets Sync (`Posts`, `MediaAssets`, `ExecutionLogs`, `Accounts`) + pre-delete canonical lock check/claim (`instaops_job_locks`) & signed Cloudinary `/destroy`
-   |-- W05: Unified Health Probes (`instaops_verify_health_and_rpc`, empty-safe Sheets, Cloudinary, Meta Graph, `n8nEnv`) + Unambiguous 1-of-1 Graph Verification (no `list[0]` fallback)
+Online n8n Server (https://137.23.61.127.sslip.io) — Workflows W00..W05 (Native Webhook Header Auth + HTTP Request + Wait Nodes)
+   |-- W00: Manual read-only 5-provider credential probe (`INSTAOPS_V2_CREDENTIAL_CHECK`)
+   |-- W01: Atomic lock transfer -> Downloader (https://ig-dowloader-nnnn.vercel.app/api/n8n/resolve) -> Cloudinary Basic Auth (`instaops-v2/`) -> `instaops_finalize_extraction` (`DRAFT`)
+   |-- W02: `instaops_get_runtime_settings` DB gate -> Supabase DB assets + revision OR-check -> Meta Graph v22.0 (1..10 `WAIT`-polled Child+Parent + single `media_publish` + pre-permalink `published_id` save)
+   |-- W03: Cron Scheduler -> DB gate (`scheduling_enabled && live_publish_enabled`) -> `instaops_claim_due_scheduled_posts` -> W02 lock handoff
+   |-- W04: Multi-tab Sheets Sync + DB gate + pre-delete canonical lock check/claim + Basic Auth Cloudinary `/destroy` + direct `instaops_finalize_deletion`
+   |-- W05: Unified Health Probes (Sheets, `instaops_verify_health_and_rpc`, Cloudinary, Meta Graph, `instaops_get_runtime_settings`) + strict persisted/explicit `published_id` Graph verification (zero feed-similarity fallback)
 ```
 
 ## Failure Isolation & Reconciliation Guarantees

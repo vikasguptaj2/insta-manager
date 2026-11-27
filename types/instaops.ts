@@ -229,13 +229,54 @@ export interface DownloaderResolveResult {
   media: DownloaderMediaItem[];
 }
 
+export type DiagnosticState =
+  | 'connected'
+  | 'not_configured'
+  | 'auth_rejected'
+  | 'workflow_inactive'
+  | 'webhook_unavailable'
+  | 'timeout'
+  | 'invalid_response'
+  | 'provider_error'
+  | 'not_tested';
+
 export interface ServiceConnectionStatus {
   id: 'supabase' | 'n8n' | 'downloader' | 'sheets' | 'cloudinary' | 'instagram' | 'lockStore' | 'ai';
   name: string;
   status: 'connected' | 'degraded' | 'offline' | 'unconfigured';
+  diagnosticState?: DiagnosticState;
+  httpStatus?: number | null;
+  errorCode?: string;
+  requestId?: string;
+  executionId?: string;
+  fromCache?: boolean;
   detail: string;
   checkedAt: string;
   latencyMs?: number;
+}
+
+export interface WorkflowIntegrityReport {
+  role: 'W01' | 'W02' | 'W03' | 'W04' | 'W05';
+  workflowId: string;
+  configured: boolean;
+  reachable: boolean;
+  name: string;
+  active: boolean;
+  required: boolean;
+  nodeCount: number;
+  expectedMaxNodes: number;
+  webhookPaths: string[];
+  hasWebhookAuth: boolean;
+  hasLegacyIfSchema: boolean;
+  hasDuplicateNodeNames: boolean;
+  hasBrokenConnections: boolean;
+  hasUnboundPlaceholders: boolean;
+  hasDuplicateCanvasSuspected: boolean;
+  conflictingActiveWorkflowIds: string[];
+  disabledCronTriggers: boolean;
+  integrityOk: boolean;
+  errors: string[];
+  warnings: string[];
 }
 
 export interface SyncQueueRecord {
@@ -262,14 +303,27 @@ export interface ReadinessMatrix {
   atomicRpcTested: boolean;
   rlsVerified: boolean;
   n8nAuthenticated: boolean;
+  n8nManagementAuthenticated?: boolean;
   requiredWorkflowsConfigured: boolean;
+  workflowIntegrityVerified?: boolean;
+  requiredWorkflowsActive?: boolean;
+  webhookAuthVerified?: boolean;
+  runtimeSettingsAvailable?: boolean;
+  livePublishGateEnabled?: boolean;
+  liveDeleteGateEnabled?: boolean;
+  schedulingGateEnabled?: boolean;
   downloaderAuthVerified: boolean;
   cloudinaryAuthenticated: boolean;
   instagramAuthenticated: boolean;
+  sheetsReachable?: boolean;
   n8nEnvAccessOk: boolean;
+  n8nDiagnosticStatus?: DiagnosticState;
+  lastSuccessfulCheckAt?: string | null;
   readyForExtraction: boolean;
   readyForPublishing: boolean;
   readyForDeletion: boolean;
+  readyForScheduling?: boolean;
+  workflowReports?: WorkflowIntegrityReport[];
 }
 
 export interface StorageSummary {
@@ -380,6 +434,9 @@ export interface OverviewResponse {
   locks: JobLock[];
   syncQueue?: SyncQueueRecord[];
   readiness?: ReadinessMatrix;
+  diagnosticsRequestId?: string;
+  diagnosticsFromCache?: boolean;
+  lastDiagnosticAt?: string;
   cooldown: {
     blocked: boolean;
     until: string | null;

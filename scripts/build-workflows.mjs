@@ -5,6 +5,7 @@ import { ROOT_DIR, loadServerModule } from './_env.mjs';
 const { verifyWorkflowExport } = loadServerModule('lib/n8n/workflow-safety.js');
 
 const FILES = [
+  ['W00', 'n8n/workflows/00-manual-credential-check.json'],
   ['W01', 'n8n/workflows/01-extract-upload.json'],
   ['W02', 'n8n/workflows/02-publish-content.json'],
   ['W03', 'n8n/workflows/03-scheduled-runner.json'],

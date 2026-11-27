@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import type {
   ContentRecord,
+  DiagnosticState,
   DurableJob,
   ExecutionLogRecord,
   MediaAssetRecord,
@@ -11,6 +12,7 @@ import type {
   ServiceConnectionStatus,
   StorageSummary,
   SyncQueueRecord,
+  WorkflowIntegrityReport,
 } from '../types/instaops';
 import { getConfig, validateConfig } from './config/env';
 import { AppError } from './errors/codes';
@@ -39,11 +41,14 @@ import {
 } from './cloudinary/assets';
 import { verifyDownloaderAuth } from './downloader/client';
 import {
+  classifyDiagnosticError,
   getExecutionDetail,
   getWorkflowMetadata,
   isActiveExecution,
   listConfiguredWorkflowExecutions,
   n8nWebhookRequest,
+  n8nWebhookRequestDetailed,
+  verifyRemoteWorkflowsIntegrity,
 } from './n8n/client';
 import { createJobRecord, getLockStore } from './jobs/lock-store';
 import { isSupabasePrimaryConfigured, SupabaseRepository } from './supabase/server';
@@ -296,31 +301,56 @@ async function loadRemoteSnapshot(
   };
 }
 
-export async function getReadinessDiagnostics(
-  fetchImpl: typeof fetch = fetch,
-): Promise<{
+export interface ReadinessDiagnosticsOutput {
   readiness: ReadinessMatrix;
   connections: ServiceConnectionStatus[];
   validation: ReturnType<typeof validateConfig>;
-}> {
+  requestId: string;
+  fromCache: boolean;
+  checkedAt: string;
+}
+
+const DIAG_CACHE_TTL_MS = 15_000;
+let cachedDiagnostics: {
+  cacheKey: string;
+  expiresAt: number;
+  output: Omit<ReadinessDiagnosticsOutput, 'fromCache'>;
+} | null = null;
+let lastSuccessfulDiagAt: string | null = null;
+const inflightDiagnostics = new Map<string, Promise<ReadinessDiagnosticsOutput>>();
+
+export function resetDiagnosticsCacheForTest(): void {
+  cachedDiagnostics = null;
+  lastSuccessfulDiagAt = null;
+  inflightDiagnostics.clear();
+}
+
+export async function getReadinessDiagnostics(
+  fetchImpl: typeof fetch = fetch,
+  options: { forceRefresh?: boolean } = {},
+): Promise<ReadinessDiagnosticsOutput> {
   const cfg = getConfig();
   const validation = validateConfig(cfg);
   const now = new Date().toISOString();
+  const requestId = crypto.randomUUID();
 
   if (cfg.demoMode) {
     const connections: ServiceConnectionStatus[] = [
-      { id: 'supabase', name: 'Supabase PostgreSQL (Primary)', status: 'connected', detail: 'DEMO_MODE simulated primary DB + RLS + RPC', checkedAt: now },
-      { id: 'n8n', name: 'Online n8n Server', status: 'connected', detail: 'DEMO_MODE simulated (W01-W05)', checkedAt: now },
-      { id: 'downloader', name: 'Hosted Downloader', status: 'connected', detail: 'DEMO_MODE simulated Bearer auth', checkedAt: now },
-      { id: 'sheets', name: 'Google Sheets (Sync Layer)', status: 'connected', detail: 'DEMO_MODE outbox simulated', checkedAt: now },
-      { id: 'cloudinary', name: `Cloudinary (${cfg.cloudinaryCloudName})`, status: 'connected', detail: 'DEMO_MODE simulated', checkedAt: now },
-      { id: 'instagram', name: `Instagram (${cfg.instagramAccountLabel})`, status: 'connected', detail: `ID ${cfg.instagramUserId} (Demo)`, checkedAt: now },
-      { id: 'lockStore', name: 'Durable Lock Store', status: 'connected', detail: 'In-memory test lock', checkedAt: now },
-      { id: 'ai', name: 'Optional AI Captioning', status: cfg.flags.aiCaptionEnabled ? 'connected' : 'unconfigured', detail: cfg.flags.aiCaptionEnabled ? 'Enabled' : 'Disabled by config', checkedAt: now },
+      { id: 'supabase', name: 'Supabase PostgreSQL (Primary)', status: 'connected', diagnosticState: 'connected', httpStatus: 200, requestId, detail: 'DEMO_MODE simulated primary DB + RLS + RPC', checkedAt: now },
+      { id: 'n8n', name: 'Online n8n Server', status: 'connected', diagnosticState: 'connected', httpStatus: 200, requestId, detail: 'DEMO_MODE simulated (W01-W05)', checkedAt: now },
+      { id: 'downloader', name: 'Hosted Downloader', status: 'connected', diagnosticState: 'connected', httpStatus: 400, requestId, detail: 'DEMO_MODE simulated Bearer auth', checkedAt: now },
+      { id: 'sheets', name: 'Google Sheets (Sync Layer)', status: 'connected', diagnosticState: 'connected', requestId, detail: 'DEMO_MODE outbox simulated', checkedAt: now },
+      { id: 'cloudinary', name: `Cloudinary (${cfg.cloudinaryCloudName})`, status: 'connected', diagnosticState: 'connected', httpStatus: 200, requestId, detail: 'DEMO_MODE simulated', checkedAt: now },
+      { id: 'instagram', name: `Instagram (${cfg.instagramAccountLabel})`, status: 'connected', diagnosticState: 'connected', httpStatus: 200, requestId, detail: `ID ${cfg.instagramUserId} (Demo)`, checkedAt: now },
+      { id: 'lockStore', name: 'Durable Lock Store', status: 'connected', diagnosticState: 'connected', requestId, detail: 'In-memory test lock', checkedAt: now },
+      { id: 'ai', name: 'Optional AI Captioning', status: cfg.flags.aiCaptionEnabled ? 'connected' : 'unconfigured', diagnosticState: cfg.flags.aiCaptionEnabled ? 'connected' : 'not_configured', requestId, detail: cfg.flags.aiCaptionEnabled ? 'Enabled' : 'Disabled by config', checkedAt: now },
     ];
     return {
       validation,
       connections,
+      requestId,
+      fromCache: false,
+      checkedAt: now,
       readiness: {
         configurationValid: true,
         supabaseReachable: true,
@@ -328,262 +358,599 @@ export async function getReadinessDiagnostics(
         atomicRpcTested: true,
         rlsVerified: true,
         n8nAuthenticated: true,
+        n8nManagementAuthenticated: true,
         requiredWorkflowsConfigured: true,
+        workflowIntegrityVerified: true,
+        requiredWorkflowsActive: true,
+        webhookAuthVerified: true,
+        runtimeSettingsAvailable: true,
+        livePublishGateEnabled: cfg.flags.livePublishEnabled,
+        liveDeleteGateEnabled: cfg.flags.liveDeleteEnabled,
+        schedulingGateEnabled: cfg.flags.schedulingEnabled,
         downloaderAuthVerified: true,
         cloudinaryAuthenticated: true,
         instagramAuthenticated: true,
+        sheetsReachable: true,
         n8nEnvAccessOk: true,
+        n8nDiagnosticStatus: 'connected',
+        lastSuccessfulCheckAt: now,
         readyForExtraction: true,
         readyForPublishing: true,
         readyForDeletion: true,
+        readyForScheduling: cfg.flags.schedulingEnabled,
       },
     };
   }
 
-  const wfEntries: Array<{ key: 'extract' | 'publish' | 'schedule' | 'content' | 'recovery'; id: string; required: boolean }> = [
-    { key: 'extract', id: cfg.workflows.extractId, required: true },
-    { key: 'publish', id: cfg.workflows.publishId, required: true },
-    { key: 'schedule', id: cfg.workflows.scheduleId, required: false },
-    { key: 'content', id: cfg.workflows.contentId, required: true },
-    { key: 'recovery', id: cfg.workflows.recoveryId, required: true },
-  ];
+  const isDefaultFetch = fetchImpl === fetch;
+  const cacheKey = `${cfg.n8nBaseUrl}|${cfg.workflows.recoveryId}|${cfg.workflows.extractId}|${cfg.workflows.publishId}|${cfg.workflows.contentId}|${cfg.supabaseUrl}|${cfg.downloaderBaseUrl}`;
 
-  type RemoteRecoveryDiag = {
-    supabase?: { ok?: boolean; detail?: string };
-    sheets?: { ok?: boolean; detail?: string };
-    cloudinary?: { ok?: boolean; detail?: string };
-    instagram?: { ok?: boolean; detail?: string };
-    n8nEnv?: {
-      ok?: boolean;
-      envBlocked?: boolean;
-      livePublishEnabled?: boolean;
-      liveDeleteEnabled?: boolean;
-      schedulingEnabled?: boolean;
-      detail?: string;
+  if (isDefaultFetch && !options.forceRefresh && cachedDiagnostics && cachedDiagnostics.cacheKey === cacheKey && Date.now() < cachedDiagnostics.expiresAt) {
+    return {
+      ...cachedDiagnostics.output,
+      fromCache: true,
+      connections: cachedDiagnostics.output.connections.map((c) => ({ ...c, fromCache: true })),
     };
-  };
-
-  const [sbDiag, dlAuth, wfChecks, remoteRecovery] = await Promise.all([
-    cfg.supabaseUrl && cfg.supabaseServiceRoleKey
-      ? new SupabaseRepository(fetchImpl).getHealthDiagnostics()
-      : Promise.resolve({
-          ok: false,
-          reachable: false,
-          schemaVerified: false,
-          rlsVerified: false,
-          anonRevoked: false,
-          atomicRpcTested: false,
-          activeAccountsCount: 0,
-          detail: 'Missing SUPABASE_SERVICE_ROLE_KEY in .env.local',
-          latencyMs: 0,
-        }),
-    verifyDownloaderAuth(fetchImpl, 8_000),
-    cfg.n8nApiKey
-      ? Promise.all(
-          wfEntries.map(async (entry) => {
-            if (!entry.id) return { ...entry, ok: false, active: false, error: 'Not configured' };
-            try {
-              const meta = await getWorkflowMetadata(entry.id, fetchImpl);
-              return { ...entry, ok: true, active: meta.active, name: meta.name };
-            } catch (e) {
-              return { ...entry, ok: false, active: false, error: e instanceof Error ? e.message : String(e) };
-            }
-          }),
-        )
-      : Promise.resolve(wfEntries.map((entry) => ({ ...entry, ok: false, active: false, error: 'Missing N8N_API_KEY' }))),
-    cfg.n8nWebhookSecret && cfg.workflows.recoveryPath
-      ? n8nWebhookRequest<{ services?: RemoteRecoveryDiag }>(
-          cfg.workflows.recoveryPath,
-          { action: 'CHECK_CONNECTIONS', request_id: crypto.randomUUID() },
-          8_000,
-          fetchImpl,
-        )
-          .then((r) => r.services ?? null)
-          .catch(() => null)
-      : Promise.resolve(null),
-  ]);
-
-  const lockStore = getLockStore();
-  let lockOk = false;
-  let lockDetail = 'Local fallback only (Supabase/Postgres lock backend missing; live publish/delete gated)';
-  if (lockStore.mode === 'supabase') {
-    lockOk = sbDiag.ok && sbDiag.atomicRpcTested;
-    lockDetail = lockOk
-      ? 'Supabase atomic lock/renew/release RPCs & RLS self-test verified'
-      : `Supabase atomic RPC unverified: ${sbDiag.detail}`;
-  } else if (lockStore.mode === 'postgres') {
-    try {
-      await lockStore.ensureSchema();
-      lockOk = true;
-      lockDetail = 'PostgreSQL atomic instaops_v2 schema verified';
-    } catch (e) {
-      lockDetail = `Lock store verification failed: ${e instanceof Error ? e.message : String(e)}`;
-    }
   }
 
-  const contentWf = wfChecks.find((w) => w.key === 'content');
-  const extractWf = wfChecks.find((w) => w.key === 'extract');
-  const publishWf = wfChecks.find((w) => w.key === 'publish');
-  const recoveryWf = wfChecks.find((w) => w.key === 'recovery');
+  if (isDefaultFetch && !options.forceRefresh && inflightDiagnostics.has(cacheKey)) {
+    return inflightDiagnostics.get(cacheKey)!;
+  }
 
-  const n8nAuthenticated = Boolean(cfg.n8nApiKey) && wfChecks.some((w) => w.ok);
-  const requiredWorkflowsConfigured = Boolean(
-    extractWf?.ok && publishWf?.ok && contentWf?.ok && recoveryWf?.ok,
-  );
-  const allRequiredActive = Boolean(
-    extractWf?.active && publishWf?.active && contentWf?.active && recoveryWf?.active,
-  );
+  const runPromise = (async (): Promise<ReadinessDiagnosticsOutput> => {
+    type RemoteProviderStatus = {
+      ok?: boolean;
+      httpStatus?: number;
+      detail?: string;
+      id?: string;
+      username?: string;
+    };
+    type RemoteRecoveryDiag = {
+      supabase?: RemoteProviderStatus;
+      sheets?: RemoteProviderStatus;
+      cloudinary?: RemoteProviderStatus;
+      instagram?: RemoteProviderStatus;
+      n8nEnv?: {
+        ok?: boolean;
+        envBlocked?: boolean;
+        settingsAvailable?: boolean;
+        livePublishEnabled?: boolean;
+        liveDeleteEnabled?: boolean;
+        schedulingEnabled?: boolean;
+        updatedBy?: string;
+        updatedAt?: string;
+        detail?: string;
+      };
+    };
 
-  const cloudinaryAuthenticated = Boolean(remoteRecovery?.cloudinary?.ok);
-  const instagramAuthenticated = Boolean(remoteRecovery?.instagram?.ok);
-  const n8nEnvAccessOk = remoteRecovery?.n8nEnv?.ok !== false && remoteRecovery?.n8nEnv?.envBlocked !== true;
-  const n8nLivePublish = Boolean(remoteRecovery?.n8nEnv?.livePublishEnabled);
-  const n8nLiveDelete = Boolean(remoteRecovery?.n8nEnv?.liveDeleteEnabled);
+    const repo = cfg.supabaseUrl && cfg.supabaseServiceRoleKey ? new SupabaseRepository(fetchImpl) : null;
 
-  const readiness: ReadinessMatrix = {
-    configurationValid: validation.valid,
-    supabaseReachable: sbDiag.reachable,
-    databaseSchemaVerified: sbDiag.schemaVerified,
-    atomicRpcTested: sbDiag.atomicRpcTested || (lockStore.mode === 'postgres' && lockOk),
-    rlsVerified: sbDiag.rlsVerified && sbDiag.anonRevoked,
-    n8nAuthenticated,
-    requiredWorkflowsConfigured,
-    downloaderAuthVerified: dlAuth.authVerified,
-    cloudinaryAuthenticated,
-    instagramAuthenticated,
-    n8nEnvAccessOk,
-    readyForExtraction: Boolean(
-      validation.valid &&
-        sbDiag.reachable &&
-        sbDiag.schemaVerified &&
-        lockOk &&
-        n8nAuthenticated &&
-        extractWf?.active &&
-        dlAuth.authVerified &&
-        cloudinaryAuthenticated &&
-        n8nEnvAccessOk,
-    ),
-    readyForPublishing: Boolean(
-      validation.valid &&
-        sbDiag.reachable &&
-        sbDiag.schemaVerified &&
-        sbDiag.rlsVerified &&
-        sbDiag.anonRevoked &&
-        lockOk &&
-        n8nAuthenticated &&
-        publishWf?.active &&
-        cloudinaryAuthenticated &&
-        instagramAuthenticated &&
-        cfg.flags.livePublishEnabled &&
-        n8nLivePublish &&
-        n8nEnvAccessOk,
-    ),
-    readyForDeletion: Boolean(
-      validation.valid &&
-        sbDiag.reachable &&
-        sbDiag.schemaVerified &&
-        sbDiag.rlsVerified &&
-        sbDiag.anonRevoked &&
-        lockOk &&
-        n8nAuthenticated &&
-        contentWf?.active &&
-        cloudinaryAuthenticated &&
-        cfg.flags.liveDeleteEnabled &&
-        n8nLiveDelete &&
-        n8nEnvAccessOk,
-    ),
-  };
+    const [sbDiag, runtimeSettings, dlAuth, wfIntegrity] = await Promise.all([
+      repo
+        ? repo.getHealthDiagnostics()
+        : Promise.resolve({
+            ok: false,
+            reachable: false,
+            schemaVerified: false,
+            rlsVerified: false,
+            anonRevoked: false,
+            atomicRpcTested: false,
+            activeAccountsCount: 0,
+            detail: 'Missing SUPABASE_SERVICE_ROLE_KEY in .env.local',
+            latencyMs: 0,
+          }),
+      repo
+        ? repo.getRuntimeSettings()
+        : Promise.resolve({
+            available: false,
+            livePublishEnabled: false,
+            liveDeleteEnabled: false,
+            schedulingEnabled: false,
+            updatedBy: '',
+            changeReason: '',
+            updatedAt: '',
+            detail: 'Supabase service-role key not configured.',
+          }),
+      verifyDownloaderAuth(fetchImpl, 15_000),
+      verifyRemoteWorkflowsIntegrity(fetchImpl),
+    ]);
 
-  const statuses: ServiceConnectionStatus[] = [
-    {
-      id: 'supabase',
-      name: 'Supabase PostgreSQL (Primary)',
-      status: !cfg.supabaseServiceRoleKey
-        ? 'unconfigured'
-        : sbDiag.ok
-          ? 'connected'
-          : sbDiag.reachable
+    const wfReports: WorkflowIntegrityReport[] = wfIntegrity.reports;
+    const extractWf = wfReports.find((w) => w.role === 'W01');
+    const publishWf = wfReports.find((w) => w.role === 'W02');
+    const scheduleWf = wfReports.find((w) => w.role === 'W03');
+    const contentWf = wfReports.find((w) => w.role === 'W04');
+    const recoveryWf = wfReports.find((w) => w.role === 'W05');
+
+    const n8nAuthenticated = Boolean(cfg.n8nApiKey) && wfIntegrity.authenticated;
+    const requiredWorkflowsConfigured = Boolean(
+      extractWf?.reachable && publishWf?.reachable && contentWf?.reachable && recoveryWf?.reachable,
+    );
+    const allRequiredActive = Boolean(
+      extractWf?.active && publishWf?.active && contentWf?.active && recoveryWf?.active,
+    );
+    const requiredIntegrityOk = [extractWf, publishWf, contentWf, recoveryWf]
+      .filter((r): r is WorkflowIntegrityReport => Boolean(r))
+      .every((r) => r.reachable && r.integrityOk);
+    const scheduleIntegrityOk = !scheduleWf?.configured || !scheduleWf.reachable || scheduleWf.integrityOk;
+    const workflowIntegrityVerified = requiredWorkflowsConfigured && requiredIntegrityOk && scheduleIntegrityOk;
+
+    interface W05ProbeResult {
+      attempted: boolean;
+      ok: boolean;
+      diagnosticState: DiagnosticState;
+      httpStatus: number | null;
+      errorCode?: string;
+      latencyMs?: number;
+      executionId?: string;
+      remoteRequestId?: string;
+      detail: string;
+      services: RemoteRecoveryDiag | null;
+    }
+
+    let w05Probe: W05ProbeResult;
+    if (!cfg.n8nWebhookSecret || !cfg.workflows.recoveryPath) {
+      w05Probe = {
+        attempted: false,
+        ok: false,
+        diagnosticState: 'not_configured',
+        httpStatus: null,
+        detail: !cfg.n8nWebhookSecret
+          ? 'N8N_WEBHOOK_SECRET is missing in .env.local.'
+          : 'N8N_RECOVERY_PATH is missing in config.',
+        services: null,
+      };
+    } else if (recoveryWf?.reachable && !recoveryWf.active) {
+      w05Probe = {
+        attempted: false,
+        ok: false,
+        diagnosticState: 'workflow_inactive',
+        httpStatus: null,
+        detail: `W05 workflow (${recoveryWf.workflowId}) is inactive in n8n; activate it before running webhook diagnostics.`,
+        services: null,
+      };
+    } else {
+      try {
+        const res = await n8nWebhookRequestDetailed<{
+          ok?: boolean;
+          request_id?: string;
+          execution_id?: string;
+          services?: RemoteRecoveryDiag;
+        }>(
+          cfg.workflows.recoveryPath,
+          { action: 'CHECK_CONNECTIONS', request_id: requestId, ig_user_id: cfg.instagramUserId },
+          cfg.diagnosticTimeoutMs,
+          fetchImpl,
+        );
+        if (!res.data || typeof res.data.services !== 'object' || res.data.services === null) {
+          w05Probe = {
+            attempted: true,
+            ok: false,
+            diagnosticState: 'invalid_response',
+            httpStatus: res.status,
+            latencyMs: res.latencyMs,
+            executionId: res.data?.execution_id ? String(res.data.execution_id) : undefined,
+            remoteRequestId: res.data?.request_id ? String(res.data.request_id) : undefined,
+            detail: 'W05 webhook returned HTTP 200 without a services diagnostic object.',
+            services: null,
+          };
+        } else {
+          w05Probe = {
+            attempted: true,
+            ok: true,
+            diagnosticState: 'connected',
+            httpStatus: res.status,
+            latencyMs: res.latencyMs,
+            executionId: res.data.execution_id ? String(res.data.execution_id) : undefined,
+            remoteRequestId: res.data.request_id ? String(res.data.request_id) : undefined,
+            detail: 'W05 webhook diagnostics completed.',
+            services: res.data.services,
+          };
+        }
+      } catch (err) {
+        const cls = classifyDiagnosticError(err);
+        w05Probe = {
+          attempted: true,
+          ok: false,
+          diagnosticState: cls.diagnosticState,
+          httpStatus: cls.httpStatus,
+          errorCode: cls.errorCode,
+          detail: cls.detail,
+          services: null,
+        };
+      }
+    }
+
+    const lockStore = getLockStore();
+    let lockOk = false;
+    let lockDetail = 'Local fallback only (Supabase/Postgres lock backend missing; live publish/delete gated)';
+    if (lockStore.mode === 'supabase') {
+      lockOk = sbDiag.ok && sbDiag.atomicRpcTested;
+      lockDetail = lockOk
+        ? 'Supabase atomic lock/renew/release RPCs & RLS self-test verified'
+        : `Supabase atomic RPC unverified: ${sbDiag.detail}`;
+    } else if (lockStore.mode === 'postgres') {
+      try {
+        await lockStore.ensureSchema();
+        lockOk = true;
+        lockDetail = 'PostgreSQL atomic instaops_v2 schema verified';
+      } catch (e) {
+        lockDetail = `Lock store verification failed: ${e instanceof Error ? e.message : String(e)}`;
+      }
+    }
+
+    const remoteRecovery = w05Probe.services;
+    const w05Ok = w05Probe.ok && Boolean(remoteRecovery);
+
+    const cloudinaryAuthenticated = Boolean(w05Ok && remoteRecovery?.cloudinary?.ok === true);
+    const instagramAuthenticated = Boolean(w05Ok && remoteRecovery?.instagram?.ok === true);
+    const sheetsReachable = Boolean(w05Ok && remoteRecovery?.sheets?.ok === true);
+    const n8nEnvAccessOk = Boolean(
+      w05Ok && remoteRecovery?.n8nEnv?.ok === true && remoteRecovery?.n8nEnv?.envBlocked !== true,
+    );
+
+    const dbLivePublish = runtimeSettings.available
+      ? runtimeSettings.livePublishEnabled
+      : Boolean(w05Ok && remoteRecovery?.n8nEnv?.livePublishEnabled);
+    const dbLiveDelete = runtimeSettings.available
+      ? runtimeSettings.liveDeleteEnabled
+      : Boolean(w05Ok && remoteRecovery?.n8nEnv?.liveDeleteEnabled);
+    const dbScheduling = runtimeSettings.available
+      ? runtimeSettings.schedulingEnabled
+      : Boolean(w05Ok && remoteRecovery?.n8nEnv?.schedulingEnabled);
+
+    const livePublishGateEnabled = Boolean(
+      cfg.flags.livePublishEnabled && (!isSupabasePrimaryConfigured() || dbLivePublish),
+    );
+    const liveDeleteGateEnabled = Boolean(
+      cfg.flags.liveDeleteEnabled && (!isSupabasePrimaryConfigured() || dbLiveDelete),
+    );
+    const schedulingGateEnabled = Boolean(
+      cfg.flags.schedulingEnabled && (!isSupabasePrimaryConfigured() || dbScheduling),
+    );
+
+    const integrityIssues = wfReports
+      .filter((r) => r.errors.length > 0)
+      .map((r) => `${r.role}: ${r.errors[0]}`);
+
+    let n8nDiagState: DiagnosticState = 'connected';
+    let n8nStatus: ServiceConnectionStatus['status'] = 'connected';
+    let n8nDetail = 'All required workflows (W01, W02, W04, W05) active, verified & webhook authenticated';
+
+    if (!cfg.n8nApiKey) {
+      n8nDiagState = 'not_configured';
+      n8nStatus = 'unconfigured';
+      n8nDetail = 'N8N_API_KEY is missing in .env.local';
+    } else if (!n8nAuthenticated) {
+      n8nDiagState =
+        wfIntegrity.httpStatus === 401 || wfIntegrity.httpStatus === 403
+          ? 'auth_rejected'
+          : /timed out|timeout/i.test(wfIntegrity.authError)
+            ? 'timeout'
+            : 'provider_error';
+      n8nStatus = 'offline';
+      n8nDetail = wfIntegrity.authError || 'Unable to authenticate n8n REST API';
+    } else if (!requiredWorkflowsConfigured) {
+      n8nDiagState = 'not_configured';
+      n8nStatus = 'degraded';
+      n8nDetail = `n8n API authenticated, but one or more W01/W02/W04/W05 IDs are missing or unreachable (${integrityIssues.slice(0, 2).join('; ') || 'check IDs'})`;
+    } else if (!workflowIntegrityVerified) {
+      n8nDiagState = 'provider_error';
+      n8nStatus = 'degraded';
+      n8nDetail = `Workflow integrity check failed: ${integrityIssues.slice(0, 2).join(' | ')}`;
+    } else if (!allRequiredActive) {
+      n8nDiagState = 'workflow_inactive';
+      n8nStatus = 'degraded';
+      const inactive = [extractWf, publishWf, contentWf, recoveryWf].filter((w) => w && !w.active).map((w) => w!.role);
+      n8nDetail = `Required workflow(s) inactive in n8n: ${inactive.join(', ')}${!scheduleWf?.active ? ' (W03 paused intentionally)' : ''}`;
+    } else if (!w05Probe.ok) {
+      n8nDiagState = w05Probe.diagnosticState;
+      n8nStatus = 'degraded';
+      n8nDetail = `W05 webhook diagnostic (${w05Probe.diagnosticState}): ${w05Probe.detail}`;
+    } else if (!n8nEnvAccessOk) {
+      n8nDiagState = 'provider_error';
+      n8nStatus = 'degraded';
+      n8nDetail = `W05 runtime check reported gate/environment error: ${remoteRecovery?.n8nEnv?.detail ?? 'verify runtime settings'}`;
+    } else if (!scheduleWf?.active) {
+      n8nDetail = 'Required workflows (W01, W02, W04, W05) active & verified (W03 paused for manual phase)';
+    }
+
+    if (w05Ok && n8nStatus === 'connected' && cloudinaryAuthenticated && instagramAuthenticated) {
+      lastSuccessfulDiagAt = now;
+    }
+
+    const readiness: ReadinessMatrix = {
+      configurationValid: validation.valid,
+      supabaseReachable: sbDiag.reachable,
+      databaseSchemaVerified: sbDiag.schemaVerified,
+      atomicRpcTested: sbDiag.atomicRpcTested || (lockStore.mode === 'postgres' && lockOk),
+      rlsVerified: sbDiag.rlsVerified && sbDiag.anonRevoked,
+      n8nAuthenticated,
+      n8nManagementAuthenticated: n8nAuthenticated,
+      requiredWorkflowsConfigured,
+      workflowIntegrityVerified,
+      requiredWorkflowsActive: allRequiredActive,
+      webhookAuthVerified: w05Ok,
+      runtimeSettingsAvailable: runtimeSettings.available || Boolean(remoteRecovery?.n8nEnv?.settingsAvailable),
+      livePublishGateEnabled,
+      liveDeleteGateEnabled,
+      schedulingGateEnabled,
+      downloaderAuthVerified: dlAuth.authVerified,
+      cloudinaryAuthenticated,
+      instagramAuthenticated,
+      sheetsReachable,
+      n8nEnvAccessOk,
+      n8nDiagnosticStatus: n8nDiagState,
+      lastSuccessfulCheckAt: lastSuccessfulDiagAt,
+      workflowReports: wfReports,
+      readyForExtraction: Boolean(
+        validation.valid &&
+          sbDiag.reachable &&
+          sbDiag.schemaVerified &&
+          lockOk &&
+          n8nAuthenticated &&
+          extractWf?.active &&
+          workflowIntegrityVerified &&
+          dlAuth.authVerified &&
+          cloudinaryAuthenticated &&
+          n8nEnvAccessOk,
+      ),
+      readyForPublishing: Boolean(
+        validation.valid &&
+          sbDiag.reachable &&
+          sbDiag.schemaVerified &&
+          sbDiag.rlsVerified &&
+          sbDiag.anonRevoked &&
+          lockOk &&
+          n8nAuthenticated &&
+          publishWf?.active &&
+          workflowIntegrityVerified &&
+          cloudinaryAuthenticated &&
+          instagramAuthenticated &&
+          livePublishGateEnabled &&
+          n8nEnvAccessOk,
+      ),
+      readyForDeletion: Boolean(
+        validation.valid &&
+          sbDiag.reachable &&
+          sbDiag.schemaVerified &&
+          sbDiag.rlsVerified &&
+          sbDiag.anonRevoked &&
+          lockOk &&
+          n8nAuthenticated &&
+          contentWf?.active &&
+          workflowIntegrityVerified &&
+          cloudinaryAuthenticated &&
+          liveDeleteGateEnabled &&
+          n8nEnvAccessOk,
+      ),
+      readyForScheduling: Boolean(
+        validation.valid &&
+          sbDiag.reachable &&
+          sbDiag.schemaVerified &&
+          sbDiag.rlsVerified &&
+          sbDiag.anonRevoked &&
+          lockOk &&
+          n8nAuthenticated &&
+          publishWf?.active &&
+          scheduleWf?.active &&
+          workflowIntegrityVerified &&
+          cloudinaryAuthenticated &&
+          instagramAuthenticated &&
+          livePublishGateEnabled &&
+          schedulingGateEnabled &&
+          n8nEnvAccessOk,
+      ),
+    };
+
+    const notTestedPrefix = `Not tested (W05 recovery probe ${w05Probe.diagnosticState}: ${w05Probe.detail})`;
+    const cldHttp = remoteRecovery?.cloudinary?.httpStatus ?? null;
+    const igHttp = remoteRecovery?.instagram?.httpStatus ?? null;
+
+    const statuses: ServiceConnectionStatus[] = [
+      {
+        id: 'supabase',
+        name: 'Supabase PostgreSQL (Primary)',
+        status: !cfg.supabaseServiceRoleKey
+          ? 'unconfigured'
+          : sbDiag.ok
+            ? 'connected'
+            : sbDiag.reachable
+              ? 'degraded'
+              : 'offline',
+        diagnosticState: !cfg.supabaseServiceRoleKey
+          ? 'not_configured'
+          : sbDiag.ok
+            ? 'connected'
+            : sbDiag.reachable
+              ? 'provider_error'
+              : 'timeout',
+        httpStatus: sbDiag.reachable ? 200 : null,
+        requestId,
+        detail: sbDiag.ok ? `Schema, RLS & atomic RPC verified (${sbDiag.detail})` : sbDiag.detail,
+        checkedAt: now,
+        latencyMs: sbDiag.latencyMs,
+      },
+      {
+        id: 'n8n',
+        name: `Online n8n (${cfg.n8nBaseUrl})`,
+        status: n8nStatus,
+        diagnosticState: n8nDiagState,
+        httpStatus: w05Probe.httpStatus ?? wfIntegrity.httpStatus,
+        errorCode: w05Probe.errorCode,
+        requestId: w05Probe.remoteRequestId ?? requestId,
+        executionId: w05Probe.executionId,
+        detail: n8nDetail,
+        checkedAt: now,
+        latencyMs: w05Probe.latencyMs,
+      },
+      {
+        id: 'downloader',
+        name: `Hosted Downloader (${cfg.downloaderBaseUrl})`,
+        status: !cfg.downloaderApiKey
+          ? 'unconfigured'
+          : dlAuth.authVerified
+            ? 'connected'
+            : dlAuth.ok
+              ? 'degraded'
+              : 'offline',
+        diagnosticState: !cfg.downloaderApiKey
+          ? 'not_configured'
+          : dlAuth.authVerified
+            ? 'connected'
+            : /timed out|timeout/i.test(dlAuth.detail)
+              ? 'timeout'
+              : /401|403/.test(dlAuth.detail)
+                ? 'auth_rejected'
+                : 'provider_error',
+        requestId,
+        detail: dlAuth.detail,
+        checkedAt: now,
+        latencyMs: dlAuth.latencyMs,
+      },
+      {
+        id: 'sheets',
+        name: 'Google Sheets (Sync Reporting)',
+        status: !w05Ok
+          ? cfg.sheetsSyncEnabled
             ? 'degraded'
-            : 'offline',
-      detail: sbDiag.ok ? `Schema, RLS & atomic RPC verified (${sbDiag.detail})` : sbDiag.detail,
-      checkedAt: now,
-      latencyMs: sbDiag.latencyMs,
-    },
-    {
-      id: 'n8n',
-      name: `Online n8n (${cfg.n8nBaseUrl})`,
-      status: !cfg.n8nApiKey
-        ? 'unconfigured'
-        : n8nAuthenticated && allRequiredActive && n8nEnvAccessOk
-          ? 'connected'
-          : n8nAuthenticated
-            ? 'degraded'
-            : 'offline',
-      detail: !n8nAuthenticated
-        ? String((contentWf && 'error' in contentWf ? contentWf.error : undefined) ?? 'Unable to authenticate n8n REST API')
-        : !requiredWorkflowsConfigured
-          ? 'n8n API authenticated, but one or more W01-W05 workflow IDs are missing/invalid'
-          : !allRequiredActive
-            ? 'Workflows imported, but one or more required W01/W02/W04/W05 workflows are inactive'
-            : !n8nEnvAccessOk
-              ? `Active, but n8n $env/secret access blocked or incomplete (${remoteRecovery?.n8nEnv?.detail ?? 'check N8N_BLOCK_ENV_ACCESS_IN_NODE=false'})`
-              : 'All required workflows (W01, W02, W04, W05) active & verified',
-      checkedAt: now,
-    },
-    {
-      id: 'downloader',
-      name: `Hosted Downloader (${cfg.downloaderBaseUrl})`,
-      status: dlAuth.authVerified ? 'connected' : dlAuth.ok ? 'degraded' : 'offline',
-      detail: dlAuth.detail,
-      checkedAt: now,
-      latencyMs: dlAuth.latencyMs,
-    },
-    {
-      id: 'sheets',
-      name: 'Google Sheets (Sync Reporting)',
-      status: remoteRecovery?.sheets?.ok ? 'connected' : cfg.sheetsSyncEnabled ? 'degraded' : 'unconfigured',
-      detail:
-        remoteRecovery?.sheets?.detail ??
-        (cfg.sheetsSyncEnabled ? 'Outbox sync enabled via W04/W05' : 'Sheets reporting sync disabled'),
-      checkedAt: now,
-    },
-    {
-      id: 'cloudinary',
-      name: `Cloudinary (${cfg.cloudinaryCloudName})`,
-      status: remoteRecovery?.cloudinary?.ok ? 'connected' : 'unconfigured',
-      detail: remoteRecovery?.cloudinary?.detail ?? 'Verified via W05 Cloudinary API credential probe inside online n8n',
-      checkedAt: now,
-    },
-    {
-      id: 'instagram',
-      name: `Instagram (${cfg.instagramAccountLabel})`,
-      status: remoteRecovery?.instagram?.ok ? 'connected' : 'unconfigured',
-      detail: remoteRecovery?.instagram?.detail ?? `Target IG User ${cfg.instagramUserId} (v22.0)`,
-      checkedAt: now,
-    },
-    {
-      id: 'lockStore',
-      name: 'Durable Atomic Lock Store',
-      status: lockStore.mode === 'supabase' || lockStore.mode === 'postgres' ? (lockOk ? 'connected' : 'offline') : 'unconfigured',
-      detail: lockDetail,
-      checkedAt: now,
-    },
-    {
-      id: 'ai',
-      name: 'Optional AI Captioning',
-      status: cfg.flags.aiCaptionEnabled ? 'connected' : 'unconfigured',
-      detail: cfg.flags.aiCaptionEnabled ? 'Enabled' : 'Disabled (AI_CAPTION_ENABLED=false)',
-      checkedAt: now,
-    },
-  ];
+            : 'unconfigured'
+          : remoteRecovery?.sheets?.ok
+            ? 'connected'
+            : cfg.sheetsSyncEnabled
+              ? 'degraded'
+              : 'unconfigured',
+        diagnosticState: !w05Ok
+          ? 'not_tested'
+          : remoteRecovery?.sheets?.ok
+            ? 'connected'
+            : 'provider_error',
+        requestId: w05Probe.remoteRequestId ?? requestId,
+        executionId: w05Probe.executionId,
+        detail: !w05Ok
+          ? notTestedPrefix
+          : remoteRecovery?.sheets?.detail ??
+            (cfg.sheetsSyncEnabled ? 'Outbox sync enabled via W04/W05' : 'Sheets reporting sync disabled'),
+        checkedAt: now,
+      },
+      {
+        id: 'cloudinary',
+        name: `Cloudinary (${cfg.cloudinaryCloudName})`,
+        status: !w05Ok
+          ? 'offline'
+          : remoteRecovery?.cloudinary?.ok
+            ? 'connected'
+            : cldHttp === 401 || cldHttp === 403
+              ? 'offline'
+              : 'degraded',
+        diagnosticState: !w05Ok
+          ? 'not_tested'
+          : remoteRecovery?.cloudinary?.ok
+            ? 'connected'
+            : cldHttp === 401 || cldHttp === 403
+              ? 'auth_rejected'
+              : 'provider_error',
+        httpStatus: w05Ok ? cldHttp : null,
+        requestId: w05Probe.remoteRequestId ?? requestId,
+        executionId: w05Probe.executionId,
+        detail: !w05Ok
+          ? notTestedPrefix
+          : remoteRecovery?.cloudinary?.detail ?? 'Cloudinary credential probe failed inside W05',
+        checkedAt: now,
+      },
+      {
+        id: 'instagram',
+        name: `Instagram (${cfg.instagramAccountLabel})`,
+        status: !w05Ok
+          ? 'offline'
+          : remoteRecovery?.instagram?.ok
+            ? 'connected'
+            : igHttp === 401 || igHttp === 403
+              ? 'offline'
+              : 'degraded',
+        diagnosticState: !w05Ok
+          ? 'not_tested'
+          : remoteRecovery?.instagram?.ok
+            ? 'connected'
+            : igHttp === 401 || igHttp === 403
+              ? 'auth_rejected'
+              : 'provider_error',
+        httpStatus: w05Ok ? igHttp : null,
+        requestId: w05Probe.remoteRequestId ?? requestId,
+        executionId: w05Probe.executionId,
+        detail: !w05Ok
+          ? notTestedPrefix
+          : remoteRecovery?.instagram?.detail ?? `Target IG User ${cfg.instagramUserId} (${cfg.instagramGraphVersion})`,
+        checkedAt: now,
+      },
+      {
+        id: 'lockStore',
+        name: 'Durable Atomic Lock Store',
+        status: lockStore.mode === 'supabase' || lockStore.mode === 'postgres' ? (lockOk ? 'connected' : 'offline') : 'unconfigured',
+        diagnosticState:
+          lockStore.mode === 'local'
+            ? 'not_configured'
+            : lockOk
+              ? 'connected'
+              : 'provider_error',
+        requestId,
+        detail: lockDetail,
+        checkedAt: now,
+      },
+      {
+        id: 'ai',
+        name: 'Optional AI Captioning',
+        status: cfg.flags.aiCaptionEnabled ? 'connected' : 'unconfigured',
+        diagnosticState: cfg.flags.aiCaptionEnabled ? 'connected' : 'not_configured',
+        requestId,
+        detail: cfg.flags.aiCaptionEnabled ? 'Enabled' : 'Disabled (AI_CAPTION_ENABLED=false)',
+        checkedAt: now,
+      },
+    ];
 
-  return { readiness, connections: statuses, validation };
+    const out: ReadinessDiagnosticsOutput = {
+      readiness,
+      connections: statuses,
+      validation,
+      requestId,
+      fromCache: false,
+      checkedAt: now,
+    };
+
+    if (isDefaultFetch && w05Ok && sbDiag.ok) {
+      cachedDiagnostics = {
+        cacheKey,
+        expiresAt: Date.now() + DIAG_CACHE_TTL_MS,
+        output: {
+          readiness: out.readiness,
+          connections: out.connections,
+          validation: out.validation,
+          requestId: out.requestId,
+          checkedAt: out.checkedAt,
+        },
+      };
+    }
+
+    return out;
+  })();
+
+  if (isDefaultFetch) {
+    inflightDiagnostics.set(cacheKey, runPromise);
+  }
+  try {
+    return await runPromise;
+  } finally {
+    if (isDefaultFetch) {
+      inflightDiagnostics.delete(cacheKey);
+    }
+  }
 }
 
 export async function getConnectionsHealth(
   fetchImpl: typeof fetch = fetch,
+  options: { forceRefresh?: boolean } = {},
 ): Promise<ServiceConnectionStatus[]> {
-  const { connections } = await getReadinessDiagnostics(fetchImpl);
+  const { connections } = await getReadinessDiagnostics(fetchImpl, options);
   return connections;
 }
 
@@ -699,11 +1066,11 @@ export async function getOverviewData(fetchImpl: typeof fetch = fetch): Promise<
     sheetId: cfg.googleSheetId,
     sheetGid: cfg.googleSheetGid,
     flags: {
-      schedulingEnabled: cfg.flags.schedulingEnabled,
+      schedulingEnabled: diag.readiness.schedulingGateEnabled ?? cfg.flags.schedulingEnabled,
       bulkPublishEnabled: cfg.flags.bulkPublishEnabled,
       aiCaptionEnabled: cfg.flags.aiCaptionEnabled,
-      livePublishEnabled: cfg.flags.livePublishEnabled,
-      liveDeleteEnabled: cfg.flags.liveDeleteEnabled,
+      livePublishEnabled: diag.readiness.livePublishGateEnabled ?? cfg.flags.livePublishEnabled,
+      liveDeleteEnabled: diag.readiness.liveDeleteGateEnabled ?? cfg.flags.liveDeleteEnabled,
     },
     stats: computeStats(
       snapshotRes.posts,
@@ -728,6 +1095,9 @@ export async function getOverviewData(fetchImpl: typeof fetch = fetch): Promise<
         .at(-1) ?? null,
     connections: diag.connections,
     readiness: diag.readiness,
+    diagnosticsRequestId: diag.requestId,
+    diagnosticsFromCache: diag.fromCache,
+    lastDiagnosticAt: diag.checkedAt,
     storage: snapshotRes.storage,
     posts: snapshotRes.posts,
     assets: snapshotRes.assets,
@@ -1037,13 +1407,13 @@ export async function triggerExtractPost(
       fetchImpl,
     );
 
-    if (hookRes.accepted !== true || !hookRes.execution_id) {
+    if (hookRes.accepted !== true) {
       throw new AppError('CONFIGURATION_ERROR', 'Online n8n W01 did not return accepted execution acknowledgement.', {
         httpStatus: 502,
       });
     }
 
-    const execId = String(hookRes.execution_id);
+    const execId = String(hookRes.execution_id || requestId);
     await lockStore.saveJob({
       ...createJobRecord({
         job_id: jobId,
@@ -1337,7 +1707,7 @@ export async function triggerPublishPost(
       fetchImpl,
     );
 
-    if (hookRes.accepted !== true || !hookRes.execution_id) {
+    if (hookRes.accepted !== true) {
       throw new AppError(
         'PUBLISH_OUTCOME_UNKNOWN',
         'Online n8n W02 did not confirm execution acceptance; reconcile before retrying.',
@@ -1345,7 +1715,7 @@ export async function triggerPublishPost(
       );
     }
 
-    const execId = String(hookRes.execution_id);
+    const execId = String(hookRes.execution_id || requestId);
     await lockStore.saveJob({
       ...createJobRecord({
         job_id: jobId,
@@ -2496,9 +2866,21 @@ export async function getExecutionDetailSafe(
   return detail;
 }
 
-export async function updateRuntimeSettings(patch: {
-  schedulingEnabled?: boolean;
-}): Promise<{ schedulingEnabled: boolean }> {
+export async function updateRuntimeSettings(
+  patch: {
+    schedulingEnabled?: boolean;
+    livePublishEnabled?: boolean;
+    liveDeleteEnabled?: boolean;
+    reason?: string;
+    updatedBy?: string;
+  },
+  fetchImpl: typeof fetch = fetch,
+): Promise<{
+  schedulingEnabled: boolean;
+  livePublishEnabled?: boolean;
+  liveDeleteEnabled?: boolean;
+  updatedAt?: string;
+}> {
   const cfg = getConfig();
   if (cfg.demoMode) {
     const demo = getDemoState();
@@ -2508,9 +2890,44 @@ export async function updateRuntimeSettings(patch: {
     return { schedulingEnabled: demo.schedulingEnabled };
   }
 
-  throw new AppError(
-    'CONFIGURATION_ERROR',
-    'Runtime feature flags (SCHEDULING_ENABLED, LIVE_PUBLISH_ENABLED, LIVE_DELETE_ENABLED) are controlled via server .env.local and online n8n workflow activation for safety.',
-    { httpStatus: 409 },
-  );
+  if (!isSupabasePrimaryConfigured()) {
+    throw new AppError(
+      'CONFIGURATION_ERROR',
+      'Supabase primary database configuration is required to update runtime operational gates (fail-closed).',
+      { httpStatus: 409 },
+    );
+  }
+
+  if (patch.livePublishEnabled === true && !cfg.flags.livePublishEnabled) {
+    throw new AppError(
+      'CONFIGURATION_ERROR',
+      'Cannot enable live publishing until LIVE_PUBLISH_ENABLED=true is configured in server .env.local.',
+      { httpStatus: 409 },
+    );
+  }
+  if (patch.liveDeleteEnabled === true && !cfg.flags.liveDeleteEnabled) {
+    throw new AppError(
+      'CONFIGURATION_ERROR',
+      'Cannot enable live deletion until LIVE_DELETE_ENABLED=true is configured in server .env.local.',
+      { httpStatus: 409 },
+    );
+  }
+  if (patch.schedulingEnabled === true && !cfg.flags.schedulingEnabled) {
+    throw new AppError(
+      'CONFIGURATION_ERROR',
+      'Cannot enable scheduled runner until SCHEDULING_ENABLED=true is configured in server .env.local.',
+      { httpStatus: 409 },
+    );
+  }
+
+  const repo = new SupabaseRepository(fetchImpl);
+  const updated = await repo.updateRuntimeSettings({
+    schedulingEnabled: patch.schedulingEnabled,
+    livePublishEnabled: patch.livePublishEnabled,
+    liveDeleteEnabled: patch.liveDeleteEnabled,
+    updatedBy: patch.updatedBy ?? 'dashboard_operator',
+    reason: patch.reason ?? 'Operator settings update via /api/settings',
+  });
+  resetDiagnosticsCacheForTest();
+  return updated;
 }

@@ -158,7 +158,7 @@ export class PostgresLockStore implements LockStore {
     await this.ensureSchema();
     const leaseSec = Math.max(15, Math.min(3600, leaseSeconds));
     const res = await this.pool.query(
-      `UPDATE instaops_v2.job_locks SET expires_at = NOW() + ($3::text || ' seconds')::interval WHERE lock_key = $1 AND owner_id = $2 RETURNING expires_at::text;`,
+      `UPDATE instaops_v2.job_locks SET expires_at = NOW() + ($3::text || ' seconds')::interval WHERE lock_key = $1 AND owner_id = $2 AND expires_at >= NOW() RETURNING expires_at::text;`,
       [lockKey, ownerId, leaseSec],
     );
     const row = res.rows[0] as { expires_at?: string } | undefined;
@@ -397,9 +397,10 @@ export class LocalLockStore implements LockStore {
 
   async renewLock(lockKey: string, ownerId: string, leaseSeconds = 300): Promise<{ renewed: boolean; expires_at?: string }> {
     const existing = this.locks.get(lockKey);
-    if (!existing || existing.owner_id !== ownerId) return { renewed: false };
+    const nowMs = Date.now();
+    if (!existing || existing.owner_id !== ownerId || Date.parse(existing.expires_at) < nowMs) return { renewed: false };
     const leaseSec = Math.max(15, Math.min(3600, leaseSeconds));
-    const expires_at = new Date(Date.now() + leaseSec * 1000).toISOString();
+    const expires_at = new Date(nowMs + leaseSec * 1000).toISOString();
     this.locks.set(lockKey, { ...existing, expires_at });
     await this.persist();
     return { renewed: true, expires_at };

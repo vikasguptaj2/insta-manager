@@ -1,0 +1,1365 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "instaops-recovery-v1",
+        "responseMode": "responseNode",
+        "options": {},
+        "authentication": "headerAuth"
+      },
+      "id": "7b4e9343-ef61-4976-abf6-036e858ad1d6",
+      "name": "WEBHOOK | Recovery Bridge",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        240
+      ],
+      "webhookId": "50503423-2afe-4b58-bd1a-5b8f1d5333d1",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "CONFIGURE_WEBHOOK",
+          "name": "InstaOps Webhook Secret (x-dashboard-secret)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Safeguard marker: INSTAOPS_V2_RECOVERY — supports CHECK_CONNECTIONS, strict Meta Graph VERIFY_PUBLICATION (no list[0] fallback), and SAFE_RETRY.\nfunction readCfg(key, fallback) {\n  var blocked = false;\n  try { if (typeof $vars !== 'undefined' && $vars && $vars[key] !== undefined && $vars[key] !== null && $vars[key] !== '') return { value: String($vars[key]), source: 'vars', blocked: false }; } catch (_) {}\n  try { if (typeof $env !== 'undefined' && $env && $env[key] !== undefined && $env[key] !== null && $env[key] !== '') return { value: String($env[key]), source: 'env', blocked: false }; } catch (_) { blocked = true; }\n  return { value: fallback || '', source: fallback ? 'default' : 'missing', blocked: blocked };\n}\n\nvar item = $input.first().json || {};\nvar body = item.body || item;\nvar livePubCfg = ({value: 'false', source: 'operator-disabled', blocked: false});\nvar liveDelCfg = ({value: 'false', source: 'operator-disabled', blocked: false});\nvar schedCfg = ({value: 'false', source: 'operator-disabled', blocked: false});\nvar sheetCfg = readCfg('GOOGLE_SHEET_ID', '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs');\nvar action = String(body.action || '').trim().toUpperCase();\n\nvar envBlocked = false; // Webhook authentication is enforced by native Header Auth.\nvar error = '';\nvar httpStatus = 200;\nif (['CHECK_CONNECTIONS', 'VERIFY_PUBLICATION', 'SAFE_RETRY'].indexOf(action) === -1) {\n  error = 'Invalid recovery action: ' + action;\n  httpStatus = 400;\n}\n\nreturn [{\n  json: {\n    valid: !error,\n    error: error,\n    httpStatus: httpStatus,\n    action: action,\n    sheet_id: sheetCfg.value,\n    sb_url: readCfg('SUPABASE_URL', 'https://cdgwdlhesgcxmswsamrj.supabase.co').value.replace(/\\/$/, ''),\n    cld_cloud: readCfg('CLOUDINARY_CLOUD_NAME', 'djkkknb9k').value,\n    graph_ver: readCfg('INSTAGRAM_GRAPH_VERSION', 'v22.0').value || 'v22.0',\n    ig_user_id: String(body.ig_user_id || readCfg('INSTAGRAM_USER_ID', '17841453414532595').value),\n    post_uuid: String(body.post_uuid || ''),\n    post_id: String(body.post_id || ''),\n    container_id: String(body.container_id || ''),\n    execution_id: String(body.execution_id || ''),\n    resolution: action === 'SAFE_RETRY' ? 'RESET_DRAFT' : String(body.resolution || 'CHECK_EXECUTION').toUpperCase(),\n    published_id: String(body.published_id || ''),\n    published_url: String(body.published_url || ''),\n    n8nEnv: {\n      ok: !envBlocked,\n      envBlocked: envBlocked,\n      livePublishEnabled: livePubCfg.value.toLowerCase() === 'true',\n      liveDeleteEnabled: liveDelCfg.value.toLowerCase() === 'true',\n      schedulingEnabled: schedCfg.value.toLowerCase() === 'true',\n      detail: 'Native webhook Header Auth; W05 local safety defaults only. Verify W02/W03/W04 gates independently.'\n    }\n  }\n}];"
+      },
+      "id": "3314f70d-bc9c-4588-a690-c247e388bf78",
+      "name": "CODE | Validate Recovery Operation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "73c1c98c-c811-4666-bdce-cd63d9a110f8",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "0ad1bfb0-f922-46bb-812c-2fcc407956a9",
+      "name": "IF | Valid Recovery Auth",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        464,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: false, error: $json.error }) }}",
+        "options": {
+          "responseCode": "={{ $json.httpStatus || 403 }}"
+        }
+      },
+      "id": "08b269e5-c67c-4cd4-b29f-ed2bf84d5b39",
+      "name": "RESPOND | Unauthorized",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        704,
+        416
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "1b08ea1e-4eb2-4c3e-8e35-440aa51fb45d",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "CHECK_CONNECTIONS",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "7122816a-5e3e-4504-acb1-158f1d9247fa",
+      "name": "IF | Is CHECK_CONNECTIONS",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        704,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "mode": "id",
+          "value": "={{ $('CODE | Validate Recovery Operation').first().json.sheet_id || '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs' }}"
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "Posts"
+        },
+        "options": {}
+      },
+      "id": "371a34f1-c67f-4e5f-921d-4b7b56d7141f",
+      "name": "SHEETS | Probe Posts Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "alwaysOutputData": true,
+      "position": [
+        944,
+        0
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PZ0clxfFCt2bQvpU",
+          "name": "Google Sheets account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "var sheetItems = $input.all();\nvar sheetErr = sheetItems[0] && sheetItems[0].json ? sheetItems[0].json.error : null;\nvar nonEmptyRows = sheetItems.filter(function (it) { return it && it.json && (it.json.post_id || it.json.post_uuid); });\nreturn [{ json: { sheets: { ok: !sheetErr, detail: sheetErr ? String(sheetErr.message || sheetErr) : ('Google Sheets reporting reachable (' + nonEmptyRows.length + ' rows)') } } }];"
+      },
+      "id": "9bcb221f-706e-44fa-818d-f9068ada9fa8",
+      "name": "CODE | Capture Sheets Probe",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1168,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CODE | Validate Recovery Operation').first().json.sb_url + '/rest/v1/rpc/instaops_verify_health_and_rpc' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 10000
+        }
+      },
+      "id": "786278d3-8093-406c-8d76-51259e4e5739",
+      "name": "HTTP | Supabase Health & RPC Self-Test",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1376,
+        0
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://api.cloudinary.com/v1_1/' + encodeURIComponent($('CODE | Validate Recovery Operation').first().json.cld_cloud) + '/usage' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 10000
+        }
+      },
+      "id": "efb1cfc1-a9ee-4c91-890c-d25a546a6d4c",
+      "name": "HTTP | Probe Cloudinary API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1600,
+        0
+      ],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "J5X8exo033nX3vMT",
+          "name": "Unnamed credential"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://graph.facebook.com/' + encodeURIComponent($('CODE | Validate Recovery Operation').first().json.graph_ver) + '/' + encodeURIComponent($('CODE | Validate Recovery Operation').first().json.ig_user_id) + '?fields=id,username' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 10000
+        }
+      },
+      "id": "96e8f315-62b9-427c-bf61-232e465c8d29",
+      "name": "HTTP | Probe Instagram Business Account",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1824,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "CONFIGURE_META",
+          "name": "Meta Graph API Token Auth"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "function unpack(raw) {\n  var r = raw || {};\n  if (r.error && r.statusCode === undefined) return { ok: false, sc: 0, body: {}, err: String(r.error.message || r.error) };\n  var sc = r.statusCode !== undefined ? Number(r.statusCode) : 200;\n  var b = r.body !== undefined ? r.body : r;\n  if (typeof b === 'string') { try { b = JSON.parse(b); } catch (_) { b = {}; } }\n  return { ok: sc >= 200 && sc < 300, sc: sc, body: b || {}, err: '' };\n}\n\nvar req = $('CODE | Validate Recovery Operation').first().json;\nvar sheets = ($('CODE | Capture Sheets Probe').first().json || {}).sheets || { ok: false, detail: 'Sheets probe did not run' };\n\nvar sbU = unpack($('HTTP | Supabase Health & RPC Self-Test').first().json);\nvar sRow = Array.isArray(sbU.body) ? sbU.body[0] : sbU.body;\nvar rpcOk = Boolean(sbU.ok && sRow && sRow.schema_ok === true && sRow.rls_ok === true && sRow.anon_revoked_ok === true && sRow.atomic_rpc_ok === true);\nvar supabase = {\n  ok: rpcOk,\n  detail: rpcOk ? ('Supabase RPC, RLS & schema verified (' + String(sRow.detail || 'ok') + ')') : ('Supabase RPC diagnostic failed: ' + (sbU.err || String((sRow && (sRow.detail || sRow.message)) || ('HTTP ' + sbU.sc))))\n};\n\nvar cldU = unpack($('HTTP | Probe Cloudinary API').first().json);\nvar cb = cldU.body || {};\nvar cloudinary = (cldU.ok && !cb.error && (cb.resources !== undefined || cb.storage !== undefined || cb.plan))\n  ? { ok: true, detail: 'Plan ' + String(cb.plan || 'Active') + ' (' + String(cb.resources !== undefined ? cb.resources : 0) + ' resources)' }\n  : { ok: false, detail: cldU.err || String((cb.error && cb.error.message) || ('HTTP ' + cldU.sc)) };\n\nvar igU = unpack($input.first().json);\nvar ib = igU.body || {};\nvar instagram = (igU.ok && !ib.error && String(ib.id) === req.ig_user_id)\n  ? { ok: true, detail: 'Verified IG user @' + String(ib.username || ib.id) }\n  : { ok: false, detail: igU.err || String((ib.error && ib.error.message) || ('HTTP ' + igU.sc)) };\n\nreturn [{ json: { ok: true, services: { supabase: supabase, sheets: sheets, cloudinary: cloudinary, instagram: instagram, n8nEnv: req.n8nEnv } } }];"
+      },
+      "id": "ce56e216-0a33-429a-86f3-b62fd995831f",
+      "name": "CODE | Build Service Health Matrix",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2048,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $('CODE | Validate Recovery Operation').first().json.sb_url + '/rest/v1/instaops_posts?' + ($('CODE | Validate Recovery Operation').first().json.post_uuid ? ('id=eq.' + encodeURIComponent($('CODE | Validate Recovery Operation').first().json.post_uuid)) : ('post_id=eq.' + encodeURIComponent($('CODE | Validate Recovery Operation').first().json.post_id))) + '&select=*' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "a6e16612-70ff-4771-aad4-d1dd88391a23",
+      "name": "HTTP | Read Post For Reconciliation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        944,
+        288
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "var req = $('CODE | Validate Recovery Operation').first().json;\nvar raw = $input.first().json || {};\nvar body = raw.body !== undefined ? raw.body : raw;\nvar row = Array.isArray(body) ? body[0] : body;\nif (!row || !row.id) {\n  return [{ json: { mode: 'ERROR', result: { ok: false, verified: false, error: 'Post not found for reconciliation.' } } }];\n}\nvar res = String(req.resolution || 'CHECK_EXECUTION').toUpperCase();\nif (res === 'MARK_PUBLISHED' || res === 'CHECK_EXECUTION') {\n  return [{ json: { mode: 'VERIFY_PROVIDER', row: row, dest_ig_user_id: String(row.ig_user_id || req.ig_user_id), candidate_id: String(row.published_id || '').trim(), container_id: String(req.container_id || row.container_id || '').trim() } }];\n}\nif (row.status === 'PUBLISHED' || (row.published_id && String(row.published_id).trim() !== '')) {\n  return [{ json: { mode: 'ERROR', result: { ok: false, verified: false, error: 'Already PUBLISHED post cannot be reset via recovery.' } } }];\n}\nif (['PUBLISHING','VERIFY_MANUALLY','EXTRACTING','UPLOADING','DELETING','SCHEDULED'].includes(row.status)) return [{json:{mode:'ERROR',result:{ok:false,verified:false,error:'Active or uncertain operation cannot be reset automatically.'}}}];\nvar nextStatus = res === 'MARK_FAILED' ? 'FAILED' : (row.media_url ? 'READY' : 'DRAFT');\nvar clearErr = nextStatus === 'READY' || nextStatus === 'DRAFT';\nreturn [{\n  json: {\n    mode: 'RESET',\n    row: row,\n    next_status: nextStatus,\n    release_lock: res === 'RELEASE_LOCK' || res === 'RESET_DRAFT' || res === 'MARK_READY' || res === 'MARK_FAILED',\n    patch: {\n      status: nextStatus,\n      error: clearErr ? '' : (row.error || ''),\n      error_code: clearErr ? '' : (row.error_code || ''),\n      sheets_sync_status: 'PENDING'\n    }\n  }\n}];"
+      },
+      "id": "0f6ff883-7a7c-4615-93ea-839548b1b93f",
+      "name": "CODE | Route Reconciliation Mode",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1168,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.mode }}",
+                    "rightValue": "VERIFY_PROVIDER",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.mode }}",
+                    "rightValue": "RESET",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "d932e240-dd80-4f4a-b9a9-1837e1bec342",
+      "name": "SWITCH | Reconcile Mode",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1376,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: ($input.first().json || {}).result || { ok: false, verified: false, error: 'Reconciliation error' } }];"
+      },
+      "id": "e54bce7a-683f-4943-ba07-2121e52ce4d5",
+      "name": "CODE | Reconciliation Reject Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1648,
+        496
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('CODE | Validate Recovery Operation').first().json.sb_url + '/rest/v1/instaops_posts?id=eq.' + encodeURIComponent($json.row.id) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.patch) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        }
+      },
+      "id": "b6a14a74-7df5-4254-b835-2417b494b296",
+      "name": "HTTP | Save Reset Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1648,
+        384
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "DELETE",
+        "url": "={{ $('CODE | Validate Recovery Operation').first().json.sb_url + '/rest/v1/instaops_job_locks?lock_key=eq.' + encodeURIComponent('post:' + $('CODE | Route Reconciliation Mode').first().json.row.id) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "8e5bd2a0-22b0-472e-926c-818c2367bb65",
+      "name": "HTTP | Clear Lock On Reset",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1856,
+        384
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "var r = $('CODE | Route Reconciliation Mode').first().json;\nreturn [{ json: { ok: true, verified: false, post_uuid: r.row.id, post_id: r.row.post_id, status: r.next_status } }];"
+      },
+      "id": "5b412bd4-69b6-43b8-a461-229c765ce14c",
+      "name": "CODE | Format Reset Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2080,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $('CODE | Validate Recovery Operation').first().json.sb_url + '/rest/v1/instaops_accounts?ig_user_id=eq.' + encodeURIComponent($json.dest_ig_user_id) + '&limit=1' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "544b62b7-c98a-44c7-9ce7-388285e8b568",
+      "name": "HTTP | Read Destination Account",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1648,
+        176
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://graph.facebook.com/' + encodeURIComponent($('CODE | Validate Recovery Operation').first().json.graph_ver) + '/' + encodeURIComponent($('CODE | Route Reconciliation Mode').first().json.dest_ig_user_id) + '?fields=id,username' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "7ddb5a37-e1b2-4874-857a-30dc76666871",
+      "name": "HTTP | Graph Verify Destination Account Identity",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1856,
+        176
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "CONFIGURE_META",
+          "name": "Meta Graph API Token Auth"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "5ae934f8-c711-45aa-b10e-4c9fdf366b90",
+              "leftValue": "={{ Boolean($('CODE | Route Reconciliation Mode').first().json.candidate_id) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "04b6c679-90f7-419d-be8a-77fa088fb16b",
+      "name": "IF | Has Candidate Published ID",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2080,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://graph.facebook.com/' + encodeURIComponent($('CODE | Validate Recovery Operation').first().json.graph_ver) + '/' + encodeURIComponent($('CODE | Route Reconciliation Mode').first().json.candidate_id) + '?fields=id,permalink,media_type,media_product_type,caption,timestamp,username,owner{id}' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "728aab6b-9e7d-4b06-97f2-cd2a9424cc30",
+      "name": "HTTP | Graph Verify Candidate Media",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2320,
+        96
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "CONFIGURE_META",
+          "name": "Meta Graph API Token Auth"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "url": "={{ $('CODE | Validate Recovery Operation').first().json.sb_url + '/rest/v1/instaops_posts?published_id=eq.' + encodeURIComponent($('CODE | Route Reconciliation Mode').first().json.candidate_id) + '&select=id,post_id' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "719b9f84-49ad-4fa3-8399-bbb8ff987358",
+      "name": "HTTP | Supabase Check Duplicate Published ID",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2544,
+        96
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "function unpack(raw) {\n  var r = raw || {};\n  if (r.error && r.statusCode === undefined) return { ok: false, body: {} };\n  var sc = r.statusCode !== undefined ? Number(r.statusCode) : 200;\n  var b = r.body !== undefined ? r.body : r;\n  if (typeof b === 'string') { try { b = JSON.parse(b); } catch (_) { b = {}; } }\n  return { ok: sc >= 200 && sc < 300, body: b || {} };\n}\nfunction mediaTypeMatches(postMt, igMt) {\n  var p = String(postMt || '').toUpperCase();\n  var g = String(igMt || '').toUpperCase();\n  if (!g) return false;\n  if (p === 'CAROUSEL') return g === 'CAROUSEL_ALBUM' || g === 'CAROUSEL';\n  if (p === 'REEL') return g === 'VIDEO' || g === 'REELS';\n  if (p === 'IMAGE') return g === 'IMAGE';\n  return true;\n}\n\nvar route = $('CODE | Route Reconciliation Mode').first().json;\nvar row = route.row;\nvar candId = route.candidate_id;\nvar destId = route.dest_ig_user_id;\n\nvar acctU = unpack($('HTTP | Read Destination Account').first().json);\nvar acct = Array.isArray(acctU.body) ? acctU.body[0] : acctU.body;\nvar igAcctU = unpack($('HTTP | Graph Verify Destination Account Identity').first().json);\nvar medU = unpack($('HTTP | Graph Verify Candidate Media').first().json);\nvar dupU = unpack($('HTTP | Supabase Check Duplicate Published ID').first().json);\nvar dupRows = Array.isArray(dupU.body) ? dupU.body : [];\nvar dupConflict = dupRows.some(function (d) { return d && d.id && d.id !== row.id; });\n\nvar mb = medU.body || {};\nvar igAcct = igAcctU.body || {};\nvar ownerMatch = Boolean(mb.owner && String(mb.owner.id) === destId) || Boolean(mb.username && igAcct.username && String(mb.username).toLowerCase()===String(igAcct.username).toLowerCase());\nvar acctOk = Boolean(acct && acct.enabled === true && igAcctU.ok && String(igAcct.id) === destId);\nvar usernameMatch = !mb.username || !igAcct.username || String(mb.username).toLowerCase() === String(igAcct.username).toLowerCase();\nvar typeOk = mediaTypeMatches(row.media_type, mb.media_type);\n\nvar verified = Boolean(acctU.ok && dupU.ok && Array.isArray(dupU.body) && acctOk && medU.ok && !mb.error && mb.id && String(mb.id) === candId && ownerMatch && usernameMatch && typeOk && !dupConflict);\nif (!verified) {\n  var why = !acctOk ? 'Destination account verification failed' : dupConflict ? 'published_id already belongs to a different post' : !ownerMatch || !usernameMatch ? 'Media owner does not match destination Instagram account' : !typeOk ? 'Media type mismatch with target post' : 'Meta Graph API could not verify candidate published_id; retaining VERIFY_MANUALLY.';\n  return [{ json: { verified: false, row: row, result: { ok: true, verified: false, post_uuid: row.id, post_id: row.post_id, status: 'VERIFY_MANUALLY', error: why } } }];\n}\nreturn [{ json: { verified: true, row: row, verified_id: String(mb.id), verified_url: String(mb.permalink || '') } }];"
+      },
+      "id": "d051f964-de63-42cb-871c-451f720fd15d",
+      "name": "CODE | Validate Explicit Published Media",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2768,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://graph.facebook.com/' + encodeURIComponent($('CODE | Validate Recovery Operation').first().json.graph_ver) + '/' + encodeURIComponent($('CODE | Route Reconciliation Mode').first().json.container_id || 'missing') + '?fields=id,status_code,status' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "0b775228-ce34-4f2b-b5f3-01d22f3bb625",
+      "name": "HTTP | Graph Check Container Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2320,
+        256
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "CONFIGURE_META",
+          "name": "Meta Graph API Token Auth"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://graph.facebook.com/' + encodeURIComponent($('CODE | Validate Recovery Operation').first().json.graph_ver) + '/' + encodeURIComponent($('CODE | Route Reconciliation Mode').first().json.dest_ig_user_id) + '/media?fields=id,permalink,caption,media_type,media_product_type,timestamp&limit=25' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "cf0e68b8-dc7b-4503-8674-0a84c74ebe42",
+      "name": "HTTP | Graph Fetch Recent IG Media",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2544,
+        256
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "CONFIGURE_META",
+          "name": "Meta Graph API Token Auth"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "url": "={{ $('CODE | Validate Recovery Operation').first().json.sb_url + '/rest/v1/instaops_posts?published_id=neq.&select=id,published_id' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "f7a9c9cd-61da-46f5-996f-108a8cce07b7",
+      "name": "HTTP | Supabase Read Existing Published IDs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2768,
+        256
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "var row=$('CODE | Route Reconciliation Mode').first().json.row; return [{json:{verified:false,row:row,result:{ok:true,verified:false,post_uuid:row.id,post_id:row.post_id,status:'VERIFY_MANUALLY',error:'No persisted published ID; feed similarity is not proof. Verify the original publication manually; do not retry.'}}}];"
+      },
+      "id": "4dbb9a9f-c338-4c7b-830c-5d31b7b51d7c",
+      "name": "CODE | Strict Container & Publication Match",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2976,
+        256
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "383fb297-5cb7-4917-afa7-e31a7f7aeac5",
+              "leftValue": "={{ $json.verified }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "742b3eb7-390a-467e-a9fb-3a4e305b6a70",
+      "name": "IF | Publication Verified Unambiguously",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3216,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('CODE | Validate Recovery Operation').first().json.sb_url + '/rest/v1/instaops_posts?id=eq.' + encodeURIComponent($json.row.id) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ status: 'PUBLISHED', published_id: $json.verified_id, published_url: $json.verified_url || $json.row.published_url || '', published_at: $json.row.published_at || new Date().toISOString(), error: '', error_code: '', error_stage: '', sheets_sync_status: 'PENDING' }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        }
+      },
+      "id": "010723e0-6c7f-42cb-900f-e7e7e973117d",
+      "name": "HTTP | Save Verified PUBLISHED",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3456,
+        96
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "DELETE",
+        "url": "={{ $('CODE | Validate Recovery Operation').first().json.sb_url + '/rest/v1/instaops_job_locks?lock_key=eq.' + encodeURIComponent('post:' + $('IF | Publication Verified Unambiguously').last().json.row.id) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "7ed44de2-d1d4-4331-8a7e-5748f83e1770",
+      "name": "HTTP | Clear Lock On Verified Published",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3680,
+        96
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "var prev = $('IF | Publication Verified Unambiguously').last().json;\nreturn [{ json: { ok: true, verified: true, post_uuid: prev.row.id, post_id: prev.row.post_id, status: 'PUBLISHED', published_id: prev.verified_id, published_url: prev.verified_url } }];"
+      },
+      "id": "977d5336-7ac3-4eaa-877c-f9dfffda07a4",
+      "name": "CODE | Format Verified Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3904,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "var res = ($input.first().json || {}).result || { ok: true, verified: false, status: 'VERIFY_MANUALLY', error: 'Unverified publication; retained VERIFY_MANUALLY.' };\nreturn [{ json: res }];"
+      },
+      "id": "729c21e7-2127-4f2e-851b-b4b0754ab034",
+      "name": "CODE | Retain VERIFY_MANUALLY Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3456,
+        256
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "de984f07-7b3d-46b9-8e9b-78996d78e497",
+      "name": "RESPOND | Recovery Result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        4160,
+        160
+      ]
+    },
+    {
+      "id": "374961f8-f7ec-4e88-899b-411db8b95273",
+      "name": "CHECK | Save Verified PUBLISHED",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3556,
+        -29
+      ],
+      "parameters": {
+        "jsCode": "var raw=$input.first().json||{}; var sc=Number(raw.statusCode); var b=raw.body; if(raw.error||!Number.isFinite(sc)||sc<200||sc>=300) throw new Error('CRITICAL_HTTP_FAILED: HTTP | Save Verified PUBLISHED (HTTP '+sc+')'); if(typeof b==='string'){try{b=JSON.parse(b)}catch(_){b=null}}; if(!Array.isArray(b)||b.length!==1) throw new Error('DATABASE_WRITE_NOT_VERIFIED'); return $input.all();"
+      }
+    },
+    {
+      "id": "8a3b32c3-384d-4e36-bba9-df57655a7f16",
+      "name": "CHECK | Save Reset Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1748,
+        259
+      ],
+      "parameters": {
+        "jsCode": "var raw=$input.first().json||{}; var sc=Number(raw.statusCode); var b=raw.body; if(raw.error||!Number.isFinite(sc)||sc<200||sc>=300) throw new Error('CRITICAL_HTTP_FAILED: HTTP | Save Reset Status (HTTP '+sc+')'); if(typeof b==='string'){try{b=JSON.parse(b)}catch(_){b=null}}; if(!Array.isArray(b)||b.length!==1) throw new Error('DATABASE_WRITE_NOT_VERIFIED'); return $input.all();"
+      }
+    }
+  ],
+  "connections": {
+    "WEBHOOK | Recovery Bridge": {
+      "main": [
+        [
+          {
+            "node": "CODE | Validate Recovery Operation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Validate Recovery Operation": {
+      "main": [
+        [
+          {
+            "node": "IF | Valid Recovery Auth",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF | Valid Recovery Auth": {
+      "main": [
+        [
+          {
+            "node": "IF | Is CHECK_CONNECTIONS",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "RESPOND | Unauthorized",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF | Is CHECK_CONNECTIONS": {
+      "main": [
+        [
+          {
+            "node": "SHEETS | Probe Posts Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HTTP | Read Post For Reconciliation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SHEETS | Probe Posts Sheet": {
+      "main": [
+        [
+          {
+            "node": "CODE | Capture Sheets Probe",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Capture Sheets Probe": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Supabase Health & RPC Self-Test",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Supabase Health & RPC Self-Test": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Probe Cloudinary API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Probe Cloudinary API": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Probe Instagram Business Account",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Probe Instagram Business Account": {
+      "main": [
+        [
+          {
+            "node": "CODE | Build Service Health Matrix",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Build Service Health Matrix": {
+      "main": [
+        [
+          {
+            "node": "RESPOND | Recovery Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Read Post For Reconciliation": {
+      "main": [
+        [
+          {
+            "node": "CODE | Route Reconciliation Mode",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Route Reconciliation Mode": {
+      "main": [
+        [
+          {
+            "node": "SWITCH | Reconcile Mode",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SWITCH | Reconcile Mode": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Read Destination Account",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HTTP | Save Reset Status",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CODE | Reconciliation Reject Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Reconciliation Reject Payload": {
+      "main": [
+        [
+          {
+            "node": "RESPOND | Recovery Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Save Reset Status": {
+      "main": [
+        [
+          {
+            "node": "CHECK | Save Reset Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Clear Lock On Reset": {
+      "main": [
+        [
+          {
+            "node": "CODE | Format Reset Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Format Reset Result": {
+      "main": [
+        [
+          {
+            "node": "RESPOND | Recovery Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Read Destination Account": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Graph Verify Destination Account Identity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Graph Verify Destination Account Identity": {
+      "main": [
+        [
+          {
+            "node": "IF | Has Candidate Published ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF | Has Candidate Published ID": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Graph Verify Candidate Media",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HTTP | Graph Check Container Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Graph Verify Candidate Media": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Supabase Check Duplicate Published ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Supabase Check Duplicate Published ID": {
+      "main": [
+        [
+          {
+            "node": "CODE | Validate Explicit Published Media",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Validate Explicit Published Media": {
+      "main": [
+        [
+          {
+            "node": "IF | Publication Verified Unambiguously",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Graph Check Container Status": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Graph Fetch Recent IG Media",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Graph Fetch Recent IG Media": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Supabase Read Existing Published IDs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Supabase Read Existing Published IDs": {
+      "main": [
+        [
+          {
+            "node": "CODE | Strict Container & Publication Match",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Strict Container & Publication Match": {
+      "main": [
+        [
+          {
+            "node": "IF | Publication Verified Unambiguously",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF | Publication Verified Unambiguously": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Save Verified PUBLISHED",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CODE | Retain VERIFY_MANUALLY Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Save Verified PUBLISHED": {
+      "main": [
+        [
+          {
+            "node": "CHECK | Save Verified PUBLISHED",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Clear Lock On Verified Published": {
+      "main": [
+        [
+          {
+            "node": "CODE | Format Verified Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Format Verified Result": {
+      "main": [
+        [
+          {
+            "node": "RESPOND | Recovery Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Retain VERIFY_MANUALLY Result": {
+      "main": [
+        [
+          {
+            "node": "RESPOND | Recovery Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CHECK | Save Verified PUBLISHED": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Clear Lock On Verified Published",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CHECK | Save Reset Status": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Clear Lock On Reset",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "name": "InstaOps v2 - W05 Integration Fix",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": true
+  }
+}

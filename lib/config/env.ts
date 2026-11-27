@@ -37,6 +37,7 @@ export interface AppConfig {
   cloudinaryCloudName: string;
   atomicLockProvider: 'supabase' | 'postgres' | 'local';
   databaseUrl: string;
+  diagnosticTimeoutMs: number;
   flags: {
     schedulingEnabled: boolean;
     bulkPublishEnabled: boolean;
@@ -58,7 +59,7 @@ function trimUrl(val: string | undefined, fallback: string): string {
 }
 
 /** Load validated server-only configuration from environment variables. */
-export function getConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
+export function getConfig(env: Record<string, string | undefined> = process.env): AppConfig {
   const atomicProviderRaw = (env.ATOMIC_LOCK_PROVIDER ?? 'supabase').trim().toLowerCase();
   const atomicLockProvider: 'supabase' | 'postgres' | 'local' =
     atomicProviderRaw === 'local'
@@ -67,13 +68,21 @@ export function getConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         ? 'postgres'
         : 'supabase';
 
+  const rawDiagMs = Number(env.N8N_DIAGNOSTIC_TIMEOUT_MS ?? 45_000);
+  const diagnosticTimeoutMs = Number.isFinite(rawDiagMs)
+    ? Math.max(5_000, Math.min(120_000, Math.round(rawDiagMs)))
+    : 45_000;
+
   return {
     appName: (env.APP_NAME ?? 'InstaOps').trim() || 'InstaOps',
     timezone: (env.APP_TIMEZONE ?? 'Asia/Kolkata').trim() || 'Asia/Kolkata',
     appUrl: trimUrl(env.APP_URL, 'http://127.0.0.1:3000'),
     demoMode: readBool(env.DEMO_MODE, false),
-    supabaseUrl: trimUrl(env.SUPABASE_URL ?? env.NEXT_PUBLIC_SUPABASE_URL, 'https://cdgwdlhesgcxmswsamrj.supabase.co'),
-    supabaseAnonKey: (env.SUPABASE_ANON_KEY ?? env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '').trim(),
+    supabaseUrl: trimUrl(
+      env.SUPABASE_URL?.trim() || env.NEXT_PUBLIC_SUPABASE_URL?.trim(),
+      'https://cdgwdlhesgcxmswsamrj.supabase.co',
+    ),
+    supabaseAnonKey: env.SUPABASE_ANON_KEY?.trim() || env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() || '',
     supabaseServiceRoleKey: (env.SUPABASE_SERVICE_ROLE_KEY ?? '').trim(),
     n8nBaseUrl: trimUrl(env.N8N_BASE_URL, 'https://137.23.61.127.sslip.io'),
     n8nApiKey: (env.N8N_API_KEY ?? '').trim(),
@@ -106,6 +115,7 @@ export function getConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     cloudinaryCloudName: (env.CLOUDINARY_CLOUD_NAME ?? 'djkkknb9k').trim() || 'djkkknb9k',
     atomicLockProvider,
     databaseUrl: (env.DATABASE_URL ?? '').trim(),
+    diagnosticTimeoutMs,
     flags: {
       schedulingEnabled: readBool(env.SCHEDULING_ENABLED, false),
       bulkPublishEnabled: readBool(env.BULK_PUBLISH_ENABLED, false),
@@ -179,6 +189,7 @@ export function validateConfig(cfg: AppConfig = getConfig()): ConfigValidationRe
     errors.push('INSTAGRAM_USER_ID must be a numeric Instagram Business/Creator ID string.');
   }
 
+  const seenWfIds = new Map<string, string>();
   for (const [k, wid] of [
     ['N8N_EXTRACT_WORKFLOW_ID', cfg.workflows.extractId],
     ['N8N_PUBLISH_WORKFLOW_ID', cfg.workflows.publishId],
@@ -188,6 +199,14 @@ export function validateConfig(cfg: AppConfig = getConfig()): ConfigValidationRe
   ] as const) {
     if (wid && KNOWN_LEGACY_WORKFLOW_IDS.has(wid)) {
       errors.push(`${k} references a legacy local Docker workflow ID (${wid}). Import v2 workflows on the online n8n instance and assign fresh IDs.`);
+    }
+    if (wid) {
+      const prior = seenWfIds.get(wid);
+      if (prior) {
+        errors.push(`${k} duplicates workflow ID ${wid} already assigned to ${prior}. Each workflow role must have a unique ID.`);
+      } else {
+        seenWfIds.set(wid, k);
+      }
     }
   }
 

@@ -5,7 +5,11 @@ import { getReadinessDiagnostics } from '../../../lib/service';
 export async function GET(req: Request) {
   return handleApiRequest(req, async () => {
     const cfg = getConfig();
-    const { readiness, connections, validation } = await getReadinessDiagnostics();
+    const url = new URL(req.url, 'http://127.0.0.1:3000');
+    const forceRefresh =
+      url.searchParams.get('refresh') === '1' || url.searchParams.get('refresh') === 'true';
+    const { readiness, connections, validation, requestId, fromCache, checkedAt } =
+      await getReadinessDiagnostics(fetch, { forceRefresh });
     return jsonOk({
       ok: validation.valid,
       appName: cfg.appName,
@@ -16,6 +20,9 @@ export async function GET(req: Request) {
       summary: validation.summary,
       readiness,
       connections,
+      requestId,
+      fromCache,
+      checkedAt,
       now: new Date().toISOString(),
     });
   });

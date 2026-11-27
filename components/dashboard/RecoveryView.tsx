@@ -375,7 +375,7 @@ export function RecoveryView() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 12 }}>
                 <div>
                   <label htmlFor="rec-pub-id" style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>
-                    Verified Instagram Media ID (required)
+                    Verified Numeric Instagram Media ID (required)
                   </label>
                   <input
                     id="rec-pub-id"
@@ -384,6 +384,9 @@ export function RecoveryView() {
                     onChange={(e) => setPublishedId(e.target.value)}
                     placeholder="e.g. 18044229100991122"
                   />
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>
+                    Enter only the final numeric Instagram media ID belonging to the target account (8–30 digits; never a container ID).
+                  </div>
                 </div>
                 <div>
                   <label htmlFor="rec-pub-url" style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>
@@ -415,7 +418,7 @@ export function RecoveryView() {
                 disabled={
                   !inspected ||
                   busy ||
-                  (resolution === 'MARK_PUBLISHED' && !publishedId.trim())
+                  (resolution === 'MARK_PUBLISHED' && !/^\d{8,30}$/.test(publishedId.trim()))
                 }
                 onClick={() => void submitReconcile()}
               >

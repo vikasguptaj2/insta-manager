@@ -1,0 +1,1880 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "instaops-content-v1",
+        "responseMode": "responseNode",
+        "options": {},
+        "authentication": "headerAuth"
+      },
+      "id": "8da5752e-92b6-46d1-a4e4-1d7c6933c1e8",
+      "name": "WEBHOOK | Content & Sync Bridge",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        384
+      ],
+      "webhookId": "efc2dec0-b608-4810-b71c-bc4b9b8f117a",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "CONFIGURE_WEBHOOK",
+          "name": "InstaOps Webhook Secret (x-dashboard-secret)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Safeguard marker: INSTAOPS_V2_CONTENT — permanent-ID Google Sheets outbox sync and lock-verified Cloudinary /destroy via standard HTTP Request nodes.\nfunction readCfg(key, fallback) {\n  var blocked = false;\n  try { if (typeof $vars !== 'undefined' && $vars && $vars[key] !== undefined && $vars[key] !== null && $vars[key] !== '') return { value: String($vars[key]), source: 'vars', blocked: false }; } catch (_) {}\n  try { if (typeof $env !== 'undefined' && $env && $env[key] !== undefined && $env[key] !== null && $env[key] !== '') return { value: String($env[key]), source: 'env', blocked: false }; } catch (_) { blocked = true; }\n  return { value: fallback || '', source: fallback ? 'default' : 'missing', blocked: blocked };\n}\n\nvar ALLOWLIST = [\n  'LIST_POSTS',\n  'LIST_MEDIA',\n  'CREATE_POST',\n  'UPDATE_POST',\n  'SCHEDULE_POST',\n  'CANCEL_SCHEDULE',\n  'ARCHIVE_POST',\n  'SYNC_RECORD',\n  'DELETE_MEDIA',\n  'DELETE_POST'\n];\n\nvar item = $input.first().json || {};\nvar body = item.body || item;\nvar sheetCfg = readCfg('GOOGLE_SHEET_ID', '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs');\nvar liveDelCfg = ({value: 'false', source: 'operator-disabled', blocked: false});\nvar action = String(body.action || '').trim().toUpperCase();\nvar liveDelEnabled = liveDelCfg.value.toLowerCase() === 'true';\n\nvar error = '';\nvar httpStatus = 200;\nif (ALLOWLIST.indexOf(action) === -1) {\n  error = 'Unsupported action: ' + action;\n  httpStatus = 400;\n} else if (action === 'DELETE_MEDIA' || action === 'DELETE_POST') {\n  if (liveDelCfg.blocked && liveDelCfg.source === 'missing') {\n    error = 'n8n $env access denied for LIVE_DELETE_ENABLED flag.';\n    httpStatus = 500;\n  } else if (!liveDelEnabled) {\n    error = 'Live Cloudinary deletion blocked inside W04: LIVE_DELETE_ENABLED is not true.';\n    httpStatus = 409;\n  } else if (body.confirm !== true) {\n    error = 'Explicit confirm: true is required for destructive Cloudinary asset removal.';\n    httpStatus = 403;\n  }\n}\n\nvar execId = String((typeof $execution !== 'undefined' && $execution && $execution.id) || '');\nvar reqId = String(body.request_id || '');\nreturn [{\n  json: {\n    valid: !error,\n    error: error,\n    httpStatus: httpStatus,\n    action: action,\n    body: body,\n    sheet_id: sheetCfg.value,\n    sb_url: readCfg('SUPABASE_URL', 'https://cdgwdlhesgcxmswsamrj.supabase.co').value.replace(/\\/$/, ''),\n    cld_cloud: readCfg('CLOUDINARY_CLOUD_NAME', 'djkkknb9k').value,\n    live_delete_enabled: liveDelEnabled,\n    post_id: String(body.post_id || body.external_id || (body.row && body.row.post_id) || ''),\n    entity_uuid: String(body.entity_uuid || body.post_uuid || ''),\n    lock_key: String(body.lock_key || ''),\n    lock_owner: String(body.lock_owner || ''),\n    w04_owner: 'w04:' + (execId || reqId || Date.now()),\n    entity_type: String(body.entity_type || 'POST').toUpperCase(),\n    request_id: reqId,\n    execution_id: execId\n  }\n}];"
+      },
+      "id": "25bb7541-3716-4a4f-b9bc-bba5f6ec5a01",
+      "name": "CODE | Validate Content & Sync Action",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "10d29875-b22d-4371-8b5c-753d4126c21b",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "6021b30c-7865-4d40-9ff1-96f52a927172",
+      "name": "IF | Valid Content Request",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        464,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: false, error: $json.error }) }}",
+        "options": {
+          "responseCode": "={{ $json.httpStatus || 403 }}"
+        }
+      },
+      "id": "c10f2e40-3bb9-4309-b971-633f0c20a561",
+      "name": "RESPOND | Auth/Validation Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        704,
+        608
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "LIST_POSTS",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "LIST_MEDIA",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "SYNC_RECORD",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "DELETE_",
+                    "operator": {
+                      "type": "string",
+                      "operation": "startsWith"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "b5f145d3-205a-4411-aa7b-af62d451dc1f",
+      "name": "SWITCH | Route Action",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        704,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "mode": "id",
+          "value": "={{ $('CODE | Validate Content & Sync Action').first().json.sheet_id || '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs' }}"
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "Posts"
+        },
+        "options": {}
+      },
+      "id": "d2a1e8aa-e05c-4762-b648-57ffb8eca856",
+      "name": "SHEETS | Read Posts Tab",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "alwaysOutputData": true,
+      "position": [
+        960,
+        0
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PZ0clxfFCt2bQvpU",
+          "name": "Google Sheets account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "var items = $input.all().map(function (i) { return i.json; }).filter(function (r) { return r && !r.error && (r.post_id || r.post_uuid); });\nreturn [{ json: { ok: true, rows: items, logs: [] } }];"
+      },
+      "id": "1c0ae57d-5586-48f5-8745-47d8c09ed50e",
+      "name": "CODE | Format List Posts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1216,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "mode": "id",
+          "value": "={{ $('CODE | Validate Content & Sync Action').first().json.sheet_id || '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs' }}"
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "MediaAssets"
+        },
+        "options": {}
+      },
+      "id": "7733f00b-1f44-49a4-9ec6-653e820a9fe4",
+      "name": "SHEETS | Read MediaAssets Tab",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "alwaysOutputData": true,
+      "position": [
+        960,
+        144
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PZ0clxfFCt2bQvpU",
+          "name": "Google Sheets account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "88d6983f-13ae-4dd0-8fc3-140d2d991d25",
+              "leftValue": "={{ Boolean($('CODE | Validate Content & Sync Action').first().json.body && $('CODE | Validate Content & Sync Action').first().json.body.includeStorage === true) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "6e9ab346-1865-42ff-bff7-214beb7db947",
+      "name": "IF | Include Cloudinary Storage",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        144
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://api.cloudinary.com/v1_1/' + encodeURIComponent($('CODE | Validate Content & Sync Action').first().json.cld_cloud) + '/usage' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 10000
+        }
+      },
+      "id": "3537a883-24b6-4485-8941-a5ce24d00095",
+      "name": "HTTP | Probe Cloudinary Usage",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        80
+      ],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "J5X8exo033nX3vMT",
+          "name": "Unnamed credential"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "var assets = $('SHEETS | Read MediaAssets Tab').all().map(function (i) { return i.json; }).filter(function (r) { return r && !r.error && (r.internal_asset_id || r.asset_uuid); });\nvar raw = $input.first().json || {};\nvar sc = raw.statusCode !== undefined ? Number(raw.statusCode) : (raw.error ? 0 : 200);\nvar ub = raw.body !== undefined ? raw.body : raw;\nvar storage = null;\nif (!raw.error && sc < 300 && ub && !ub.error) {\n  storage = {\n    storageBytesUsed: ub.storage && ub.storage.usage !== undefined ? Number(ub.storage.usage) : null,\n    bandwidthBytesUsed: ub.bandwidth && ub.bandwidth.usage !== undefined ? Number(ub.bandwidth.usage) : null,\n    creditsUsagePercent: ub.credits && ub.credits.used_percent !== undefined ? Number(ub.credits.used_percent) : null,\n    resourcesCount: ub.resources !== undefined ? Number(ub.resources) : null,\n    plan: ub.plan ? String(ub.plan) : null\n  };\n}\nreturn [{ json: { ok: true, assets: assets, storage: storage } }];"
+      },
+      "id": "3032ed7b-2f5c-45c0-a51c-4e9ede4ca524",
+      "name": "CODE | Format List Media With Storage",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "var assets = $('SHEETS | Read MediaAssets Tab').all().map(function (i) { return i.json; }).filter(function (r) { return r && !r.error && (r.internal_asset_id || r.asset_uuid); });\nreturn [{ json: { ok: true, assets: assets, storage: null } }];"
+      },
+      "id": "85cea358-e543-406a-b03e-b1b5b132d591",
+      "name": "CODE | Format List Media Only",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "var req = $('CODE | Validate Content & Sync Action').first().json;\nvar b = req.body || {};\nvar p = b.payload || {};\nvar row = Object.assign({}, p.row || p.record || p || {});\nvar et = String(b.entity_type || req.entity_type || 'POST').toUpperCase();\nvar nowIso = new Date().toISOString();\nfunction sanitizeCell(v) { return typeof v !== 'string' ? v : (/^[=+\\-@]/.test(v) ? \"'\" + v : v); }\n\nif (et === 'POST') {\n  var outPost = Object.assign({}, row, {\n    post_uuid: String(row.post_uuid || row.id || p.post_uuid || req.entity_uuid || ''),\n    post_id: String(row.post_id || b.external_id || req.post_id || ''),\n    original_caption: sanitizeCell(String(row.original_caption || '')),\n    caption: sanitizeCell(String(row.caption || '')),\n    hashtags_json: typeof row.hashtags_json === 'string' ? row.hashtags_json : JSON.stringify(Array.isArray(row.hashtags) ? row.hashtags : []),\n    mentions_json: typeof row.mentions_json === 'string' ? row.mentions_json : JSON.stringify(Array.isArray(row.mentions) ? row.mentions : []),\n    source_metadata_json: typeof row.source_metadata_json === 'string' ? row.source_metadata_json : JSON.stringify(row.source_metadata && typeof row.source_metadata === 'object' ? row.source_metadata : {}),\n    child_container_ids: typeof row.child_container_ids === 'string' ? row.child_container_ids : JSON.stringify(Array.isArray(row.child_container_ids) ? row.child_container_ids : []),\n    sheets_sync_status: 'SYNCED',\n    sheets_synced_at: nowIso\n  });\n  delete outPost.id; delete outPost.hashtags; delete outPost.mentions; delete outPost.source_metadata;\n  return [{ json: outPost }];\n}\nif (et === 'MEDIA_ASSET') {\n  var outAsset = Object.assign({}, row, {\n    asset_uuid: String(row.asset_uuid || row.id || p.asset_uuid || req.entity_uuid || ''),\n    post_uuid: String(row.post_uuid || p.post_uuid || ''),\n    internal_asset_id: String(row.internal_asset_id || b.external_id || ''),\n    post_id: String(row.post_id || req.post_id || ''),\n    ig_child_container_id: String(row.ig_child_container_id || '')\n  });\n  delete outAsset.id;\n  return [{ json: outAsset }];\n}\nif (et === 'EXECUTION_LOG') {\n  return [{ json: { log_id: String(row.log_id || b.external_id || req.entity_uuid || ('log_' + Date.now())), request_id: String(row.request_id || ''), execution_id: String(row.execution_id || ''), workflow_id: String(row.workflow_id || ''), workflow_name: String(row.workflow_name || ''), post_id: String(row.post_id || ''), operation: String(row.operation || ''), trigger_source: String(row.trigger_source || 'DASHBOARD'), stage: String(row.stage || ''), status: String(row.status || ''), started_at: String(row.started_at || nowIso), finished_at: String(row.finished_at || nowIso), duration_ms: Number(row.duration_ms || 0), error_code: String(row.error_code || ''), error_message: sanitizeCell(String(row.error_message || '')), retryable: Boolean(row.retryable), created_at: String(row.created_at || nowIso) } }];\n}\nreturn [{ json: { account_key: String(row.account_key || b.external_id || 'A'), account_label: String(row.account_label || ''), ig_user_id: String(row.ig_user_id || req.entity_uuid || ''), enabled: row.enabled !== false, created_at: String(row.created_at || nowIso), updated_at: String(row.updated_at || nowIso) } }];"
+      },
+      "id": "8257b665-b674-4689-8360-551731d4d59a",
+      "name": "CODE | Prepare Outbox Sheet Sync",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $('CODE | Validate Content & Sync Action').first().json.entity_type }}",
+                    "rightValue": "POST",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $('CODE | Validate Content & Sync Action').first().json.entity_type }}",
+                    "rightValue": "MEDIA_ASSET",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $('CODE | Validate Content & Sync Action').first().json.entity_type }}",
+                    "rightValue": "EXECUTION_LOG",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $('CODE | Validate Content & Sync Action').first().json.entity_type }}",
+                    "rightValue": "ACCOUNT",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "4794c4aa-7c50-4d71-8043-c36a291b5b2d",
+      "name": "SWITCH | Route Outbox Entity Tab",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1184,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "mode": "id",
+          "value": "={{ $('CODE | Validate Content & Sync Action').first().json.sheet_id || '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs' }}"
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "Posts"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "post_uuid"
+          ],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "543b58d8-f700-4760-8129-c268aeff651c",
+      "name": "SHEETS | Sync Posts Tab",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "alwaysOutputData": true,
+      "position": [
+        1440,
+        256
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PZ0clxfFCt2bQvpU",
+          "name": "Google Sheets account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "mode": "id",
+          "value": "={{ $('CODE | Validate Content & Sync Action').first().json.sheet_id || '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs' }}"
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "MediaAssets"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "asset_uuid"
+          ],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "fb89d04d-3184-40d8-b5a1-6ef579c20846",
+      "name": "SHEETS | Sync MediaAssets Tab",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "alwaysOutputData": true,
+      "position": [
+        1440,
+        368
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PZ0clxfFCt2bQvpU",
+          "name": "Google Sheets account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "mode": "id",
+          "value": "={{ $('CODE | Validate Content & Sync Action').first().json.sheet_id || '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs' }}"
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "ExecutionLogs"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "log_id"
+          ],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "a303215e-9823-453c-a1f4-ec2fe77a7b0b",
+      "name": "SHEETS | Sync ExecutionLogs Tab",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "alwaysOutputData": true,
+      "position": [
+        1440,
+        464
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PZ0clxfFCt2bQvpU",
+          "name": "Google Sheets account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "mode": "id",
+          "value": "={{ $('CODE | Validate Content & Sync Action').first().json.sheet_id || '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs' }}"
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "Accounts"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "ig_user_id"
+          ],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "6c511c0e-f7ac-4da5-a63b-c5309b2c8851",
+      "name": "SHEETS | Sync Accounts Tab",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "alwaysOutputData": true,
+      "position": [
+        1328,
+        528
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PZ0clxfFCt2bQvpU",
+          "name": "Google Sheets account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "var req = $('CODE | Validate Content & Sync Action').first().json;\nvar out = $input.first() && $input.first().json ? $input.first().json : {};\nif (out.error) return [{ json: { ok: false, synced: false, sync_id: (req.body && req.body.sync_id) || '', entity_type: req.entity_type, entity_uuid: req.entity_uuid, error: String(out.error.message || out.error) } }];\nvar hasId = Boolean(out.post_uuid || out.post_id || out.asset_uuid || out.internal_asset_id || out.log_id || out.ig_user_id || out.account_key);\nif (!hasId) return [{ json: { ok: false, synced: false, sync_id: (req.body && req.body.sync_id) || '', entity_type: req.entity_type, entity_uuid: req.entity_uuid, error: 'Google Sheets write returned unverified empty confirmation.' } }];\nreturn [{ json: { ok: true, synced: true, sync_id: (req.body && req.body.sync_id) || '', entity_type: req.entity_type, entity_uuid: req.entity_uuid, post_id: req.post_id } }];"
+      },
+      "id": "5d2b9ed7-11e8-48b7-8949-62c1767ca426",
+      "name": "CODE | Verify Outbox Sheet Write",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1696,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "var req = $('CODE | Validate Content & Sync Action').first().json;\nvar b = req.body || {};\nvar row = Object.assign({}, b.row || b.record || { post_id: req.post_id, updated_at: new Date().toISOString() });\nif (!row.post_uuid && req.entity_uuid) row.post_uuid = req.entity_uuid;\nreturn [{ json: row }];"
+      },
+      "id": "600d6163-6dbc-4d0c-9b8b-7dda0c24e2c6",
+      "name": "CODE | Build Legacy Row Mutation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        624
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "mode": "id",
+          "value": "={{ $('CODE | Validate Content & Sync Action').first().json.sheet_id || '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs' }}"
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "Posts"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "post_id"
+          ],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "83764b2b-0d28-458e-a843-1126c3dc47b9",
+      "name": "SHEETS | AppendOrUpdate By Post ID",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "alwaysOutputData": true,
+      "position": [
+        1200,
+        624
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PZ0clxfFCt2bQvpU",
+          "name": "Google Sheets account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "var out = $input.first() && $input.first().json ? $input.first().json : {};\nif (out.error) return [{ json: { ok: false, error: String(out.error.message || out.error) } }];\nreturn [{ json: { ok: true, row: out } }];"
+      },
+      "id": "96f3d64e-87a2-4bb2-ac10-8bc4014b5be8",
+      "name": "CODE | Format Mutated Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        624
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $('CODE | Validate Content & Sync Action').first().json.sb_url + '/rest/v1/instaops_posts?' + ($('CODE | Validate Content & Sync Action').first().json.entity_uuid ? ('id=eq.' + encodeURIComponent($('CODE | Validate Content & Sync Action').first().json.entity_uuid)) : ('post_id=eq.' + encodeURIComponent($('CODE | Validate Content & Sync Action').first().json.post_id))) + '&select=*' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "e13194d0-c24f-47dd-be1e-03c5a4c0d273",
+      "name": "HTTP | W04 Read Authoritative Post",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        816
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "var req = $('CODE | Validate Content & Sync Action').first().json;\nvar raw = $input.first().json || {};\nvar body = raw.body !== undefined ? raw.body : raw;\nvar post = Array.isArray(body) ? body[0] : body;\nvar exists = Boolean(!raw.error && post && post.id);\nvar lockKey = exists ? ('post:' + post.id) : (req.lock_key || ('post:' + req.post_id));\nreturn [{ json: { exists: exists, post: post || {}, lock_key: lockKey, error: exists ? '' : 'Authoritative post not found in Supabase.' } }];"
+      },
+      "id": "251248d6-465b-4ac9-afa4-adc94973614a",
+      "name": "CODE | Check Deletion Post Exists",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1184,
+        816
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "1f5a90f0-d24a-434d-a6f9-6350603bdc67",
+              "leftValue": "={{ $json.exists }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c1313ead-395e-461a-9883-8c4cc47a675e",
+      "name": "IF | W04 Post Found",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1408,
+        816
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $('CODE | Validate Content & Sync Action').first().json.sb_url + '/rest/v1/instaops_media_assets?post_uuid=eq.' + encodeURIComponent($('CODE | Check Deletion Post Exists').first().json.post.id) + '&order=media_index.asc' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "30c2bd68-e0bc-454e-bb32-e601058af3ae",
+      "name": "HTTP | W04 Read Authoritative Assets",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1648,
+        768
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "url": "={{ $('CODE | Validate Content & Sync Action').first().json.sb_url + '/rest/v1/instaops_job_locks?lock_key=eq.' + encodeURIComponent($('CODE | Check Deletion Post Exists').first().json.lock_key) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "de7bad3b-8725-45b4-8f2b-788b8e6269f2",
+      "name": "HTTP | W04 Check Canonical Post Lock",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1856,
+        768
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "url": "={{ $('CODE | Validate Content & Sync Action').first().json.sb_url + '/rest/v1/instaops_jobs?post_uuid=eq.' + encodeURIComponent($('CODE | Check Deletion Post Exists').first().json.post.id) + '&operation=eq.PUBLISH&status=in.(QUEUED,RUNNING,OUTCOME_UNKNOWN)&limit=1' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "0287b66a-b379-40b8-b968-66f223764562",
+      "name": "HTTP | W04 Check Unresolved Publish Jobs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2080,
+        768
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Enforce LIVE_DELETE_ENABLED, post state, unresolved publish jobs, and authoritative deletion lock before ANY Cloudinary /destroy call.\nfunction unpack(raw) {\n  var r = raw || {};\n  return r.body !== undefined ? r.body : r;\n}\nvar req = $('CODE | Validate Content & Sync Action').first().json;\nvar chk = $('CODE | Check Deletion Post Exists').first().json;\nvar post = chk.post;\nvar lockKey = chk.lock_key;\n\nfunction blocked(msg) {\n  return [{ json: { decision: 'BLOCKED', result: { ok: false, error: msg } } }];\n}\nif (!req.live_delete_enabled || !req.body || req.body.confirm !== true) {\n  return blocked('Deletion blocked inside W04 (requires LIVE_DELETE_ENABLED=true and confirm=true).');\n}\nif (post.status === 'PUBLISHING' || post.status === 'VERIFY_MANUALLY') {\n  return blocked('Cannot delete while post is in ' + post.status + ' status.');\n}\nif (req.action === 'DELETE_POST' && (post.status === 'PUBLISHED' || (post.published_id && String(post.published_id).trim() !== ''))) {\n  return blocked('Published post cannot be deleted; archive instead.');\n}\n\nfor (var name of ['HTTP | W04 Check Unresolved Publish Jobs','HTTP | W04 Check Canonical Post Lock','HTTP | W04 Read Authoritative Assets']) { var response=$(name).first().json; if(response.error || Number(response.statusCode)<200 || Number(response.statusCode)>=300 || !Array.isArray(response.body)) return blocked('Authoritative DB check failed: '+name); }\nvar pubJobsRaw = unpack($('HTTP | W04 Check Unresolved Publish Jobs').first().json);\nvar pubJobs = Array.isArray(pubJobsRaw) ? pubJobsRaw : [];\nif (pubJobs.length > 0) {\n  return blocked('Cannot delete while an unresolved PUBLISH job (' + String(pubJobs[0].status || 'ACTIVE') + ') exists.');\n}\n\nvar locksRaw = unpack($('HTTP | W04 Check Canonical Post Lock').first().json);\nvar locks = Array.isArray(locksRaw) ? locksRaw : (locksRaw && locksRaw.lock_key ? [locksRaw] : []);\nvar nowMs = Date.now();\nvar activeLock = locks.find(function (l) { return l && l.lock_key === lockKey && (!l.expires_at || Date.parse(String(l.expires_at)) >= nowMs); });\n\nvar decision = 'NEEDS_CLAIM';\nif (activeLock) {\n  var sameOwner = Boolean(req.lock_owner && String(activeLock.owner_id) === req.lock_owner);\n  var deleteOp = ['DELETE_MEDIA', 'DELETE_POST'].indexOf(String(activeLock.operation || '').toUpperCase()) !== -1;\n  if (!sameOwner || !deleteOp) {\n    return blocked('Deletion lock conflict: active ' + String(activeLock.operation) + ' lock owned by ' + String(activeLock.owner_id) + '.');\n  }\n  decision = 'OWNER_VERIFIED';\n}\n\nvar assetsRaw = unpack($('HTTP | W04 Read Authoritative Assets').first().json);\nvar dbAssets = Array.isArray(assetsRaw) ? assetsRaw : [];\nvar reqAssetIds = Array.isArray(req.body.asset_ids) ? req.body.asset_ids.map(String) : (Array.isArray(req.body.assets) ? req.body.assets.map(function (a) { return String(a.internal_asset_id || ''); }).filter(Boolean) : []);\n\nvar queue = [];\nvar outcomes = [];\nvar failedCount = 0;\nif (reqAssetIds.length > 0) {\n  for (var ri = 0; ri < reqAssetIds.length; ri++) {\n    var wantedId = reqAssetIds[ri];\n    var matched = dbAssets.find(function (a) { return a.internal_asset_id === wantedId && a.post_uuid === post.id; });\n    if (!matched) {\n      failedCount++;\n      outcomes.push({ internal_asset_id: wantedId, public_id: '', result: 'error', error: 'Asset not owned by target post_uuid in Supabase' });\n    } else if (matched.storage_status !== 'DELETED') {\n      queue.push(matched);\n    }\n  }\n} else {\n  queue = dbAssets.filter(function (a) { return a.post_uuid === post.id && a.storage_status !== 'DELETED'; });\n}\n\nreturn [{\n  json: {\n    decision: decision,\n    lock_key: lockKey,\n    post: post,\n    acquired_w04_lock: false,\n    _delLoop: { post: post, lock_key: lockKey, acquired_w04_lock: false, queue: queue, idx: 0, outcomes: outcomes, failedCount: failedCount }\n  }\n}];"
+      },
+      "id": "b4ed2331-736c-4d12-a614-716a53adfcad",
+      "name": "CODE | Verify Deletion Gate & Lock Ownership",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2304,
+        768
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.decision }}",
+                    "rightValue": "OWNER_VERIFIED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.decision }}",
+                    "rightValue": "NEEDS_CLAIM",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "b42a83b9-b51f-4cb4-8ee2-42cd7615a3ee",
+      "name": "SWITCH | W04 Deletion Lock Decision",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        2544,
+        768
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CODE | Validate Content & Sync Action').first().json.sb_url + '/rest/v1/rpc/instaops_acquire_lock' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_lock_key: $json.lock_key, p_post_uuid: $json.post.id, p_post_id: $json.post.post_id, p_operation: $('CODE | Validate Content & Sync Action').first().json.action, p_owner_id: $('CODE | Validate Content & Sync Action').first().json.w04_owner, p_request_id: $('CODE | Validate Content & Sync Action').first().json.request_id || $('CODE | Validate Content & Sync Action').first().json.w04_owner, p_lease_seconds: 300 }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "832a791e-2f43-4b41-aa37-4a48b33ab798",
+      "name": "HTTP | W04 Acquire Canonical Delete Lock",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2784,
+        800
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "var gate = $('CODE | Verify Deletion Gate & Lock Ownership').first().json;\nvar raw = $input.first().json || {};\nvar sc = raw.statusCode !== undefined ? Number(raw.statusCode) : (raw.error ? 0 : 200);\nvar body = raw.body !== undefined ? raw.body : raw;\nvar rows = Array.isArray(body) ? body : [body];\nvar row = rows[0] || {};\nvar acquired = !raw.error && sc < 300 && row.acquired === true;\nvar loop = Object.assign({}, gate._delLoop, { acquired_w04_lock: acquired });\nreturn [{ json: { acquired: acquired, _delLoop: loop, result: { ok: false, error: 'Deletion lock conflict (' + String(row.operation || 'LOCKED') + ' held by ' + String(row.owner_id || 'another worker') + ').' } } }];"
+      },
+      "id": "b592e340-88fc-4269-b63c-930a085ec741",
+      "name": "CODE | Evaluate W04 Direct Lock Claim",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3008,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "fb0585c8-ac1b-4e8f-b1c0-1e6a6c9a1687",
+              "leftValue": "={{ $json.acquired }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "5e83e477-a0b7-4ced-aebe-9e7530484db7",
+      "name": "IF | W04 Direct Lock Acquired",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3216,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "var inp = $input.first().json || {};\nif (inp.result) return [{ json: inp.result }];\nreturn [{ json: { ok: false, error: String(inp.error || 'Deletion rejected.') } }];"
+      },
+      "id": "74e69bd1-7712-4793-a28b-c5f76f0c84db",
+      "name": "CODE | Build W04 Abort Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3456,
+        976
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nvar req = $('CODE | Validate Content & Sync Action').first().json;\nvar inp = $input.first().json || {};\nvar loop = Object.assign({}, inp._delLoop);\nvar idx = Number(loop.idx || 0);\nvar queue = Array.isArray(loop.queue) ? loop.queue : [];\nif (idx >= queue.length) {\n  return [{ json: { step: 'DONE', _delLoop: loop } }];\n}\n\nvar ast = queue[idx];\nvar pubId = String(ast.cloudinary_public_id || '').trim();\nvar resType = String(ast.resource_type || 'video').trim().toLowerCase();\nvar delType = String(ast.delivery_type || 'upload').trim().toLowerCase();\n\nif (!pubId || ['image', 'video', 'raw'].indexOf(resType) === -1) {\n  var errReason = 'Invalid or missing cloudinary_public_id/resource_type in DB asset.';\n  var outcomes = loop.outcomes.slice();\n  outcomes.push({ internal_asset_id: ast.internal_asset_id, public_id: pubId, result: 'error', error: errReason });\n  loop.outcomes = outcomes;\n  loop.failedCount = Number(loop.failedCount || 0) + 1;\n  loop.idx = idx + 1;\n  return [{ json: { step: loop.idx >= queue.length ? 'DONE' : 'SKIP_TO_NEXT', _delLoop: loop } }];\n}\n\nreturn [{\n  json: {\n    step: 'DESTROY_HTTP',\n    destroy_url: 'https://api.cloudinary.com/v1_1/' + encodeURIComponent(req.cld_cloud) + '/' + resType + '/destroy',\n    internal_asset_id: ast.internal_asset_id,\n    public_id: pubId,\n    resource_type: resType,\n    delivery_type: delType,\n    include_type_param: true,\n    _delLoop: loop\n  }\n}];"
+      },
+      "id": "69fef5eb-8aad-4d63-bc58-424daa6557b0",
+      "name": "CODE | Prepare Next Cloudinary Destroy",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3456,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.step }}",
+                    "rightValue": "DESTROY_HTTP",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.step }}",
+                    "rightValue": "SKIP_TO_NEXT",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "2137ead1-2a27-460a-8014-91c3b747ba13",
+      "name": "SWITCH | Destroy Step Decision",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        3696,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.destroy_url }}",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "public_id",
+              "value": "={{ $json.public_id }}"
+            },
+            {
+              "name": "type",
+              "value": "={{ $json.delivery_type }}"
+            },
+            {
+              "name": "invalidate",
+              "value": "true"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 30000
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth"
+      },
+      "id": "071bc38b-e1b6-457d-94eb-668d1ae1610d",
+      "name": "HTTP | Cloudinary Destroy Asset",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3936,
+        624
+      ],
+      "continueOnFail": true,
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "J5X8exo033nX3vMT",
+          "name": "Unnamed credential"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "var prep = $('CODE | Prepare Next Cloudinary Destroy').last().json;\nvar loop = Object.assign({}, prep._delLoop);\nvar outcomes = Array.isArray(loop.outcomes) ? loop.outcomes.slice() : [];\nvar raw = $input.first().json || {};\nvar netErr = Boolean(raw.error && raw.statusCode === undefined);\nvar sc = raw.statusCode !== undefined ? Number(raw.statusCode) : (netErr ? 0 : 200);\nvar dBody = raw.body !== undefined ? raw.body : raw;\nif (typeof dBody === 'string') { try { dBody = JSON.parse(dBody); } catch (_) { dBody = {}; } }\ndBody = dBody || {};\nvar cldResult = String(dBody.result || '').toLowerCase();\n\nif (!netErr && sc < 300 && !dBody.error && (cldResult === 'ok' || cldResult === 'not found')) {\n  outcomes.push({ internal_asset_id: prep.internal_asset_id, public_id: prep.public_id, resource_type: prep.resource_type, delivery_type: prep.delivery_type, result: cldResult, error: '' });\n} else {\n  loop.failedCount = Number(loop.failedCount || 0) + 1;\n  var errStr = netErr ? String(raw.error.message || 'Network error during Cloudinary destroy') : ((dBody.error && dBody.error.message) || ('Cloudinary destroy failed (HTTP ' + sc + ', result=' + (dBody.result || 'unknown') + ')'));\n  outcomes.push({ internal_asset_id: prep.internal_asset_id, public_id: prep.public_id, resource_type: prep.resource_type, delivery_type: prep.delivery_type, result: 'error', error: errStr });\n}\nloop.outcomes = outcomes;\nloop.idx = Number(loop.idx || 0) + 1;\nreturn [{ json: { _delLoop: loop } }];"
+      },
+      "id": "0d972100-0309-483f-b39d-869b2d6390f6",
+      "name": "CODE | Record Destroy Outcome",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4160,
+        624
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "var req = $('CODE | Validate Content & Sync Action').first().json;\nvar loop = ($input.first().json || {})._delLoop || {};\nvar failedCount = Number(loop.failedCount || 0);\nvar post = loop.post || {};\nvar finalStatus = failedCount > 0 ? 'FAILED' : (req.action === 'DELETE_POST' ? 'DELETED' : 'MEDIA_DELETED');\nreturn [{\n  json: {\n    acquired_w04_lock: Boolean(loop.acquired_w04_lock),\n    lock_key: String(loop.lock_key || ''),\n    response: { ok: true, post_uuid: post.id, post_id: post.post_id, status: finalStatus, outcomes: loop.outcomes || [], partial_failure: failedCount > 0 }\n  }\n}];"
+      },
+      "id": "7819da10-1c31-4273-b2aa-cc737565dad1",
+      "name": "CODE | Build W04 Delete Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3936,
+        816
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "8c017bdd-8155-476d-8b36-98f24ff09db5",
+              "leftValue": "={{ $json.acquired_w04_lock }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "3b5cef6e-f7a7-473d-8ff6-f1d05261d5b7",
+      "name": "IF | W04 Release Direct Delete Lock",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        4160,
+        816
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CODE | Validate Content & Sync Action').first().json.sb_url + '/rest/v1/rpc/instaops_release_lock' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_lock_key: $json.lock_key, p_owner_id: $('CODE | Validate Content & Sync Action').first().json.w04_owner }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "e0ec6365-12d8-4e5d-906b-cb42e13ac36a",
+      "name": "HTTP | W04 Release Direct Delete Lock",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4384,
+        768
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: $('CODE | Build W04 Delete Response').first().json.response }];"
+      },
+      "id": "44056856-bac9-4a07-ae96-7b4872fd5335",
+      "name": "CODE | Emit Final W04 Delete Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4608,
+        816
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": "={{ $json.outcomes ? 200 : ($json.ok === false ? 409 : 200) }}"
+        }
+      },
+      "id": "ec0ac622-4abf-4366-849f-a3bd34978e38",
+      "name": "RESPOND | JSON Result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        4864,
+        336
+      ]
+    }
+  ],
+  "connections": {
+    "WEBHOOK | Content & Sync Bridge": {
+      "main": [
+        [
+          {
+            "node": "CODE | Validate Content & Sync Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Validate Content & Sync Action": {
+      "main": [
+        [
+          {
+            "node": "IF | Valid Content Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF | Valid Content Request": {
+      "main": [
+        [
+          {
+            "node": "SWITCH | Route Action",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "RESPOND | Auth/Validation Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SWITCH | Route Action": {
+      "main": [
+        [
+          {
+            "node": "SHEETS | Read Posts Tab",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "SHEETS | Read MediaAssets Tab",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CODE | Prepare Outbox Sheet Sync",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HTTP | W04 Read Authoritative Post",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CODE | Build Legacy Row Mutation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SHEETS | Read Posts Tab": {
+      "main": [
+        [
+          {
+            "node": "CODE | Format List Posts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Format List Posts": {
+      "main": [
+        [
+          {
+            "node": "RESPOND | JSON Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SHEETS | Read MediaAssets Tab": {
+      "main": [
+        [
+          {
+            "node": "IF | Include Cloudinary Storage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF | Include Cloudinary Storage": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Probe Cloudinary Usage",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CODE | Format List Media Only",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Probe Cloudinary Usage": {
+      "main": [
+        [
+          {
+            "node": "CODE | Format List Media With Storage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Format List Media With Storage": {
+      "main": [
+        [
+          {
+            "node": "RESPOND | JSON Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Format List Media Only": {
+      "main": [
+        [
+          {
+            "node": "RESPOND | JSON Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Prepare Outbox Sheet Sync": {
+      "main": [
+        [
+          {
+            "node": "SWITCH | Route Outbox Entity Tab",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SWITCH | Route Outbox Entity Tab": {
+      "main": [
+        [
+          {
+            "node": "SHEETS | Sync Posts Tab",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "SHEETS | Sync MediaAssets Tab",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "SHEETS | Sync ExecutionLogs Tab",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "SHEETS | Sync Accounts Tab",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "SHEETS | Sync Posts Tab",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SHEETS | Sync Posts Tab": {
+      "main": [
+        [
+          {
+            "node": "CODE | Verify Outbox Sheet Write",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SHEETS | Sync MediaAssets Tab": {
+      "main": [
+        [
+          {
+            "node": "CODE | Verify Outbox Sheet Write",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SHEETS | Sync ExecutionLogs Tab": {
+      "main": [
+        [
+          {
+            "node": "CODE | Verify Outbox Sheet Write",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SHEETS | Sync Accounts Tab": {
+      "main": [
+        [
+          {
+            "node": "CODE | Verify Outbox Sheet Write",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Verify Outbox Sheet Write": {
+      "main": [
+        [
+          {
+            "node": "RESPOND | JSON Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Build Legacy Row Mutation": {
+      "main": [
+        [
+          {
+            "node": "SHEETS | AppendOrUpdate By Post ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SHEETS | AppendOrUpdate By Post ID": {
+      "main": [
+        [
+          {
+            "node": "CODE | Format Mutated Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Format Mutated Row": {
+      "main": [
+        [
+          {
+            "node": "RESPOND | JSON Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | W04 Read Authoritative Post": {
+      "main": [
+        [
+          {
+            "node": "CODE | Check Deletion Post Exists",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Check Deletion Post Exists": {
+      "main": [
+        [
+          {
+            "node": "IF | W04 Post Found",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF | W04 Post Found": {
+      "main": [
+        [
+          {
+            "node": "HTTP | W04 Read Authoritative Assets",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CODE | Build W04 Abort Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | W04 Read Authoritative Assets": {
+      "main": [
+        [
+          {
+            "node": "HTTP | W04 Check Canonical Post Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | W04 Check Canonical Post Lock": {
+      "main": [
+        [
+          {
+            "node": "HTTP | W04 Check Unresolved Publish Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | W04 Check Unresolved Publish Jobs": {
+      "main": [
+        [
+          {
+            "node": "CODE | Verify Deletion Gate & Lock Ownership",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Verify Deletion Gate & Lock Ownership": {
+      "main": [
+        [
+          {
+            "node": "SWITCH | W04 Deletion Lock Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SWITCH | W04 Deletion Lock Decision": {
+      "main": [
+        [
+          {
+            "node": "CODE | Prepare Next Cloudinary Destroy",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HTTP | W04 Acquire Canonical Delete Lock",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CODE | Build W04 Abort Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | W04 Acquire Canonical Delete Lock": {
+      "main": [
+        [
+          {
+            "node": "CODE | Evaluate W04 Direct Lock Claim",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Evaluate W04 Direct Lock Claim": {
+      "main": [
+        [
+          {
+            "node": "IF | W04 Direct Lock Acquired",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF | W04 Direct Lock Acquired": {
+      "main": [
+        [
+          {
+            "node": "CODE | Prepare Next Cloudinary Destroy",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CODE | Build W04 Abort Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Build W04 Abort Response": {
+      "main": [
+        [
+          {
+            "node": "RESPOND | JSON Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Prepare Next Cloudinary Destroy": {
+      "main": [
+        [
+          {
+            "node": "SWITCH | Destroy Step Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SWITCH | Destroy Step Decision": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Cloudinary Destroy Asset",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CODE | Prepare Next Cloudinary Destroy",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CODE | Build W04 Delete Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Cloudinary Destroy Asset": {
+      "main": [
+        [
+          {
+            "node": "CODE | Record Destroy Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Record Destroy Outcome": {
+      "main": [
+        [
+          {
+            "node": "CODE | Prepare Next Cloudinary Destroy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Build W04 Delete Response": {
+      "main": [
+        [
+          {
+            "node": "IF | W04 Release Direct Delete Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF | W04 Release Direct Delete Lock": {
+      "main": [
+        [
+          {
+            "node": "HTTP | W04 Release Direct Delete Lock",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CODE | Emit Final W04 Delete Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | W04 Release Direct Delete Lock": {
+      "main": [
+        [
+          {
+            "node": "CODE | Emit Final W04 Delete Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Emit Final W04 Delete Response": {
+      "main": [
+        [
+          {
+            "node": "RESPOND | JSON Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "name": "InstaOps v2 - W04 Integration Fix",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": true
+  }
+}

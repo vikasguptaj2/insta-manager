@@ -38,7 +38,18 @@ export async function PATCH(req: Request) {
     const body = await readJsonBody(req);
     const schedulingEnabled =
       typeof body.schedulingEnabled === 'boolean' ? body.schedulingEnabled : undefined;
-    const result = await updateRuntimeSettings({ schedulingEnabled });
+    const livePublishEnabled =
+      typeof body.livePublishEnabled === 'boolean' ? body.livePublishEnabled : undefined;
+    const liveDeleteEnabled =
+      typeof body.liveDeleteEnabled === 'boolean' ? body.liveDeleteEnabled : undefined;
+    const reason = typeof body.reason === 'string' ? body.reason.trim() : undefined;
+    const result = await updateRuntimeSettings({
+      schedulingEnabled,
+      livePublishEnabled,
+      liveDeleteEnabled,
+      reason,
+      updatedBy: 'dashboard_settings_api',
+    });
     return jsonOk({ ok: true, settings: result });
   });
 }

@@ -131,9 +131,14 @@ interface InstaOpsContextValue {
   deletePostAndMedia: (postId: string, confirm: boolean, reason?: string) => Promise<void>;
   fetchPostDetail: (postId: string) => Promise<PostDetailBundle>;
   fetchExecutionDetail: (execId: string) => Promise<N8nExecutionDetail>;
-  testConnections: () => Promise<ServiceConnectionStatus[]>;
+  testConnections: (forceRefresh?: boolean) => Promise<ServiceConnectionStatus[]>;
   flushSheetsSync: () => Promise<void>;
-  updateSettings: (patch: { schedulingEnabled?: boolean }) => Promise<void>;
+  updateSettings: (patch: {
+    schedulingEnabled?: boolean;
+    livePublishEnabled?: boolean;
+    liveDeleteEnabled?: boolean;
+    reason?: string;
+  }) => Promise<void>;
 }
 
 const InstaOpsContext = createContext<InstaOpsContextValue | null>(null);
@@ -441,12 +446,26 @@ export function InstaOpsProvider({ children }: { children: React.ReactNode }) {
     return res.detail;
   }, []);
 
-  const testConnections = useCallback<InstaOpsContextValue['testConnections']>(async () => {
-    const res = await callApi<{ ok: true; connections: ServiceConnectionStatus[] }>('/api/connections');
-    await refreshOverview(true);
-    pushToast({ kind: 'info', title: 'Health check finished', detail: `${res.connections.length} integrations tested` });
-    return res.connections;
-  }, [pushToast, refreshOverview]);
+  const testConnections = useCallback<InstaOpsContextValue['testConnections']>(
+    async (forceRefresh = true) => {
+      const url = forceRefresh ? '/api/connections?refresh=1' : '/api/connections';
+      const res = await callApi<{
+        ok: true;
+        connections: ServiceConnectionStatus[];
+        fromCache?: boolean;
+        requestId?: string;
+      }>(url);
+      await refreshOverview(true);
+      const cacheTag = res.fromCache ? ' (cached)' : '';
+      pushToast({
+        kind: 'info',
+        title: `Diagnostics finished${cacheTag}`,
+        detail: `${res.connections.length} integrations checked${res.requestId ? ` · req ${res.requestId.slice(0, 8)}` : ''}`,
+      });
+      return res.connections;
+    },
+    [pushToast, refreshOverview],
+  );
 
   const flushSheetsSync = useCallback<InstaOpsContextValue['flushSheetsSync']>(async () => {
     const res = await callApi<{ ok: true; flushed?: { processed: number; succeeded: number; failed: number } }>(

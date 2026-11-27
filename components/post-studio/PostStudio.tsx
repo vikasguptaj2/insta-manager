@@ -394,7 +394,16 @@ export function PostStudio({ initialPostId }: { initialPostId?: string }) {
               <div className="banner banner-info">
                 <span>
                   Active Job <span className="mono">{runningJobForPost.job_id}</span>: {runningJobForPost.operation} ·{' '}
-                  <strong>{runningJobForPost.stage}</strong>
+                  <strong>{runningJobForPost.status}</strong> ({runningJobForPost.stage}) — in progress, NOT published
+                </span>
+              </div>
+            )}
+
+            {currentPost.container_id && currentPost.status !== 'PUBLISHED' && (
+              <div className="banner banner-warning">
+                <span>
+                  Container <span className="mono">{currentPost.container_id}</span> exists ({currentPost.status}) —
+                  publication is NOT yet confirmed. Wait for completion or reconcile in Recovery.
                 </span>
               </div>
             )}
@@ -738,10 +747,11 @@ export function PostStudio({ initialPostId }: { initialPostId?: string }) {
                 )}
               </div>
 
-              {currentPost.published_at && (
+              {currentPost.status === 'PUBLISHED' && (currentPost.published_id || currentPost.published_at) && (
                 <div style={{ fontSize: 12, color: 'var(--status-success-fg)' }}>
-                  Published at {formatTimestampInTimezone(currentPost.published_at, timezone)} · ID{' '}
-                  <span className="mono">{currentPost.published_id}</span>
+                  Published{currentPost.published_at ? ` at ${formatTimestampInTimezone(currentPost.published_at, timezone)}` : ''} · ID{' '}
+                  <span className="mono">{currentPost.published_id || 'pending'}</span>
+                  {currentPost.published_url ? ` · ${currentPost.published_url}` : ' (permalink syncing)'}
                 </div>
               )}
             </div>

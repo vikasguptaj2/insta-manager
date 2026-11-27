@@ -162,7 +162,7 @@ export class SupabaseLockStore implements LockStore {
     if (!row || row.schema_ok !== true || row.rls_ok !== true || row.anon_revoked_ok !== true || row.atomic_rpc_ok !== true) {
       throw new AppError(
         'CONFIGURATION_ERROR',
-        `Supabase reliability verification incomplete (${String(row?.detail ?? 'missing tables/RLS/RPC')}). Execute supabase/migrations/006_upgrade_reliability.sql.`,
+        `Supabase reliability verification incomplete (${String(row?.detail ?? 'missing tables/RLS/RPC')}). Execute supabase/migrations/007_upgrade_locks_and_settings.sql.`,
         { httpStatus: 500 },
       );
     }
@@ -482,6 +482,106 @@ export class SupabaseRepository {
       ok: d.ok,
       detail: d.ok ? `Verified primary PostgreSQL (${d.detail})` : d.detail,
       latencyMs: d.latencyMs,
+    };
+  }
+
+  async getRuntimeSettings(): Promise<{
+    available: boolean;
+    livePublishEnabled: boolean;
+    liveDeleteEnabled: boolean;
+    schedulingEnabled: boolean;
+    updatedBy: string;
+    changeReason: string;
+    updatedAt: string;
+    detail: string;
+  }> {
+    try {
+      const { data, error } = await this.client.rpc('instaops_get_runtime_settings');
+      if (error) {
+        return {
+          available: false,
+          livePublishEnabled: false,
+          liveDeleteEnabled: false,
+          schedulingEnabled: false,
+          updatedBy: '',
+          changeReason: '',
+          updatedAt: '',
+          detail: `Runtime settings RPC unavailable: ${error.message} (apply supabase/migrations/007_upgrade_locks_and_settings.sql)`,
+        };
+      }
+      const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown> | undefined;
+      if (!row) {
+        return {
+          available: false,
+          livePublishEnabled: false,
+          liveDeleteEnabled: false,
+          schedulingEnabled: false,
+          updatedBy: '',
+          changeReason: '',
+          updatedAt: '',
+          detail: 'Runtime settings row missing; failing closed (all gates false).',
+        };
+      }
+      return {
+        available: true,
+        livePublishEnabled: row.live_publish_enabled === true,
+        liveDeleteEnabled: row.live_delete_enabled === true,
+        schedulingEnabled: row.scheduling_enabled === true,
+        updatedBy: String(row.updated_by ?? ''),
+        changeReason: String(row.change_reason ?? ''),
+        updatedAt: String(row.updated_at ?? ''),
+        detail: 'Authoritative Supabase runtime settings loaded.',
+      };
+    } catch (e) {
+      return {
+        available: false,
+        livePublishEnabled: false,
+        liveDeleteEnabled: false,
+        schedulingEnabled: false,
+        updatedBy: '',
+        changeReason: '',
+        updatedAt: '',
+        detail: e instanceof Error ? e.message : 'Failed reading runtime settings; failing closed.',
+      };
+    }
+  }
+
+  async updateRuntimeSettings(patch: {
+    livePublishEnabled?: boolean;
+    liveDeleteEnabled?: boolean;
+    schedulingEnabled?: boolean;
+    updatedBy?: string;
+    reason?: string;
+  }): Promise<{
+    livePublishEnabled: boolean;
+    liveDeleteEnabled: boolean;
+    schedulingEnabled: boolean;
+    updatedBy: string;
+    changeReason: string;
+    updatedAt: string;
+  }> {
+    const { data, error } = await this.client.rpc('instaops_update_runtime_settings', {
+      p_live_publish_enabled: typeof patch.livePublishEnabled === 'boolean' ? patch.livePublishEnabled : null,
+      p_live_delete_enabled: typeof patch.liveDeleteEnabled === 'boolean' ? patch.liveDeleteEnabled : null,
+      p_scheduling_enabled: typeof patch.schedulingEnabled === 'boolean' ? patch.schedulingEnabled : null,
+      p_updated_by: patch.updatedBy ?? 'operator',
+      p_change_reason: patch.reason ?? '',
+    });
+    if (error || !data) {
+      throw new AppError(
+        'CONFIGURATION_ERROR',
+        `Unable to update Supabase runtime settings: ${error?.message ?? 'RPC failed'} (ensure migration 007_upgrade_locks_and_settings.sql is applied).`,
+        { httpStatus: 500 },
+      );
+    }
+    const row = (Array.isArray(data) ? data[0] : data) as Record<string, unknown>;
+    return {
+      livePublishEnabled: row.live_publish_enabled === true,
+      liveDeleteEnabled: row.live_delete_enabled === true,
+      schedulingEnabled: row.scheduling_enabled === true,
+      updatedBy: String(row.updated_by ?? ''),
+      changeReason: String(row.change_reason ?? ''),
+      updatedAt: String(row.updated_at ?? ''),
     };
   }
 

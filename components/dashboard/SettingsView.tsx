@@ -4,6 +4,8 @@ import React, { useEffect, useState } from 'react';
 import { useInstaOps } from '../../hooks/use-instaops';
 import { ConnectionBadge } from '../ui/Badges';
 
+import type { ReadinessMatrix } from '../../types/instaops';
+
 interface SettingsApiResponse {
   ok: true;
   settings: {
@@ -28,6 +30,7 @@ interface SettingsApiResponse {
       liveDeleteEnabled: boolean;
     };
   };
+  readiness?: ReadinessMatrix;
   validation: {
     valid: boolean;
     errors: string[];
@@ -62,7 +65,7 @@ export function SettingsView() {
   const handleRunHealth = async () => {
     setTesting(true);
     try {
-      await testConnections();
+      await testConnections(true);
     } finally {
       setTesting(false);
     }
@@ -91,7 +94,7 @@ export function SettingsView() {
           </div>
         </div>
         <button type="button" className="btn btn-primary" disabled={testing} onClick={() => void handleRunHealth()}>
-          {testing ? 'Checking...' : 'Run Live Connection Check'}
+          {testing ? 'Refreshing...' : 'Refresh Diagnostics (?refresh=1)'}
         </button>
       </div>
 
@@ -114,7 +117,17 @@ export function SettingsView() {
       {overview?.readiness && (
         <section className="panel" aria-label="Production readiness matrix">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
-            <h2 className="panel-title" style={{ margin: 0 }}>Production Readiness Matrix</h2>
+            <div>
+              <h2 className="panel-title" style={{ margin: 0 }}>Production Readiness Matrix</h2>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                n8n probe: <span className="mono">{overview.readiness.n8nDiagnosticStatus ?? 'not_tested'}</span>
+                {overview.diagnosticsRequestId ? ` · req ${overview.diagnosticsRequestId.slice(0, 8)}` : ''}
+                {overview.diagnosticsFromCache ? ' · served from cache' : ''}
+                {overview.readiness.lastSuccessfulCheckAt
+                  ? ` · last OK ${new Date(overview.readiness.lastSuccessfulCheckAt).toLocaleString()}`
+                  : ''}
+              </div>
+            </div>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
               <span className={`badge ${overview.readiness.readyForExtraction ? 'badge-success' : 'badge-warning'}`}>
                 Extraction: {overview.readiness.readyForExtraction ? 'READY' : 'GATED'}
@@ -125,6 +138,9 @@ export function SettingsView() {
               <span className={`badge ${overview.readiness.readyForDeletion ? 'badge-success' : 'badge-warning'}`}>
                 Deletion: {overview.readiness.readyForDeletion ? 'READY' : 'GATED'}
               </span>
+              <span className={`badge ${overview.readiness.readyForScheduling ? 'badge-success' : 'badge-neutral'}`}>
+                Scheduling: {overview.readiness.readyForScheduling ? 'READY' : 'PAUSED'}
+              </span>
             </div>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 8 }}>
@@ -134,12 +150,19 @@ export function SettingsView() {
               ['Schema Verified', overview.readiness.databaseSchemaVerified],
               ['Atomic RPC Self-Test', overview.readiness.atomicRpcTested],
               ['RLS Verified', overview.readiness.rlsVerified],
+              ['Runtime Settings RPC', Boolean(overview.readiness.runtimeSettingsAvailable)],
               ['n8n Authenticated', overview.readiness.n8nAuthenticated],
+              ['n8n Mgmt API Auth', Boolean(overview.readiness.n8nManagementAuthenticated)],
               ['W01-W05 Configured', overview.readiness.requiredWorkflowsConfigured],
+              ['Workflow Integrity', Boolean(overview.readiness.workflowIntegrityVerified)],
+              ['Required WFs Active', Boolean(overview.readiness.requiredWorkflowsActive)],
+              ['Webhook Auth Verified', Boolean(overview.readiness.webhookAuthVerified)],
               ['Downloader Auth', overview.readiness.downloaderAuthVerified],
               ['Cloudinary Auth', overview.readiness.cloudinaryAuthenticated],
               ['Instagram Auth', overview.readiness.instagramAuthenticated],
-              ['n8n $env / $vars Access', overview.readiness.n8nEnvAccessOk],
+              ['Google Sheets Sync', Boolean(overview.readiness.sheetsReachable)],
+              ['Live Publish Gate', Boolean(overview.readiness.livePublishGateEnabled)],
+              ['Live Delete Gate', Boolean(overview.readiness.liveDeleteGateEnabled)],
             ].map(([label, ok]) => (
               <div
                 key={String(label)}
@@ -162,6 +185,70 @@ export function SettingsView() {
         </section>
       )}
 
+      {overview?.readiness?.workflowReports && overview.readiness.workflowReports.length > 0 && (
+        <section className="panel" aria-label="Remote n8n workflow integrity">
+          <div className="panel-header">
+            <h2 className="panel-title">Remote n8n Workflow Integrity (W01–W05)</h2>
+          </div>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Role</th>
+                  <th>Workflow ID</th>
+                  <th>State</th>
+                  <th className="num-col">Nodes</th>
+                  <th>Webhook Paths</th>
+                  <th>Integrity Flags &amp; Diagnostics</th>
+                </tr>
+              </thead>
+              <tbody>
+                {overview.readiness.workflowReports.map((wf) => (
+                  <tr key={wf.role}>
+                    <td className="mono" style={{ fontWeight: 700 }}>{wf.role}</td>
+                    <td className="mono" style={{ fontSize: 11 }}>{wf.workflowId || '—'}</td>
+                    <td>
+                      {wf.active ? (
+                        <span className="badge badge-success">Active</span>
+                      ) : wf.required ? (
+                        <span className="badge badge-danger">Inactive</span>
+                      ) : (
+                        <span className="badge badge-neutral">Paused (W03)</span>
+                      )}
+                    </td>
+                    <td className="num-col">
+                      {wf.nodeCount}/{wf.expectedMaxNodes}
+                    </td>
+                    <td className="mono" style={{ fontSize: 11 }}>
+                      {wf.webhookPaths.length > 0 ? wf.webhookPaths.join(', ') : 'cron / none'}
+                    </td>
+                    <td style={{ fontSize: 12 }}>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                        <span className={`badge ${wf.integrityOk ? 'badge-success' : wf.required ? 'badge-danger' : 'badge-warning'}`}>
+                          {wf.integrityOk ? 'INTEGRITY OK' : 'ATTENTION'}
+                        </span>
+                        {wf.hasDuplicateCanvasSuspected && <span className="badge badge-danger">Duplicate Canvas</span>}
+                        {wf.conflictingActiveWorkflowIds.length > 0 && (
+                          <span className="badge badge-danger">Webhook Conflict</span>
+                        )}
+                        {wf.hasUnboundPlaceholders && <span className="badge badge-danger">Unbound Placeholder</span>}
+                        {wf.hasLegacyIfSchema && <span className="badge badge-danger">Legacy IF v1</span>}
+                      </div>
+                      {wf.errors.length > 0 && (
+                        <div style={{ color: 'var(--status-danger-fg)', marginTop: 4 }}>{wf.errors.join(' · ')}</div>
+                      )}
+                      {wf.warnings.length > 0 && (
+                        <div style={{ color: 'var(--status-warning-fg)', marginTop: 2 }}>{wf.warnings.join(' · ')}</div>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
       <section className="panel">
         <div className="panel-header">
           <h2 className="panel-title">Live Service Connections</h2>
@@ -172,8 +259,9 @@ export function SettingsView() {
               <tr>
                 <th>Integration</th>
                 <th>Status</th>
+                <th>Diagnostic State</th>
                 <th>Details</th>
-                <th className="num-col">Latency</th>
+                <th className="num-col">HTTP / Latency</th>
               </tr>
             </thead>
             <tbody>
@@ -183,8 +271,24 @@ export function SettingsView() {
                   <td>
                     <ConnectionBadge status={c.status} />
                   </td>
-                  <td style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{c.detail}</td>
-                  <td className="num-col">{c.latencyMs !== undefined ? `${c.latencyMs} ms` : '—'}</td>
+                  <td style={{ fontSize: 11 }}>
+                    <span className="mono">{c.diagnosticState ?? '—'}</span>
+                    {c.fromCache ? <span style={{ color: 'var(--text-muted)' }}> (cache)</span> : null}
+                  </td>
+                  <td style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                    <div>{c.detail}</div>
+                    {(c.executionId || c.requestId || c.errorCode) && (
+                      <div className="mono" style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>
+                        {c.errorCode ? `code=${c.errorCode} ` : ''}
+                        {c.executionId ? `exec=${c.executionId} ` : ''}
+                        {c.requestId ? `req=${c.requestId.slice(0, 8)}` : ''}
+                      </div>
+                    )}
+                  </td>
+                  <td className="num-col">
+                    {c.httpStatus ? `HTTP ${c.httpStatus} · ` : ''}
+                    {c.latencyMs !== undefined ? `${c.latencyMs} ms` : '—'}
+                  </td>
                 </tr>
               ))}
             </tbody>

@@ -1,49 +1,109 @@
 {
-  "name": "InstaOps v2 - W03 Scheduled Runner (Supabase Primary)",
-  "active": false,
-  "settings": {
-    "executionOrder": "v1"
-  },
   "nodes": [
     {
-      "id": "w03-cron",
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "ca88c7a3-a2f9-437e-aa7a-7a0196491e0d",
       "name": "SCHEDULE | Every 5 Minutes (Disabled By Default)",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
-      "disabled": true,
-      "position": [120, 260],
-      "parameters": {
-        "rule": {
-          "interval": [{ "field": "minutes", "minutesInterval": 5 }]
-        }
-      }
+      "position": [
+        0,
+        240
+      ],
+      "disabled": true
     },
     {
-      "id": "w03-gate",
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($vars && $vars.SUPABASE_URL ? String($vars.SUPABASE_URL) : 'https://cdgwdlhesgcxmswsamrj.supabase.co').replace(/\\/$/, '') + '/rest/v1/rpc/instaops_get_runtime_settings' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "03110000-0000-4000-8000-000000000001",
+      "name": "HTTP | Read Runtime Settings RPC",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        112,
+        240
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Safeguard marker: INSTAOPS_V2_SCHEDULE — enforces authoritative Supabase runtime flags (scheduling_enabled + live_publish_enabled) before calling instaops_claim_due_scheduled_posts on Supabase instaops_posts.\nfunction readCfg(key, fallback) {\n  var blocked = false;\n  try {\n    if (typeof $vars !== 'undefined' && $vars && $vars[key] !== undefined && $vars[key] !== null && $vars[key] !== '') {\n      return { value: String($vars[key]), blocked: false };\n    }\n  } catch (_) {}\n  try {\n    if (typeof $env !== 'undefined' && $env && $env[key] !== undefined && $env[key] !== null && $env[key] !== '') {\n      return { value: String($env[key]), blocked: false };\n    }\n  } catch (_) { blocked = true; }\n  return { value: fallback || '', blocked: blocked };\n}\n\nvar raw = $input.first().json || {};\nvar netErr = Boolean(raw.error && raw.statusCode === undefined);\nvar sc = raw.statusCode !== undefined ? Number(raw.statusCode) : (raw.body !== undefined && !netErr ? 200 : 0);\nvar b = raw.body !== undefined ? raw.body : raw;\nif (typeof b === 'string') { try { b = JSON.parse(b); } catch (_) { b = null; } }\nvar sRow = Array.isArray(b) ? b[0] : b;\nvar settingsOk = Boolean(!netErr && sc >= 200 && sc < 300 && sRow && typeof sRow.scheduling_enabled === 'boolean' && typeof sRow.live_publish_enabled === 'boolean');\nvar schedEnabled = Boolean(settingsOk && sRow.scheduling_enabled === true);\nvar livePubEnabled = Boolean(settingsOk && sRow.live_publish_enabled === true);\nvar execId = String((typeof $execution !== 'undefined' && $execution && $execution.id) || Date.now());\nreturn [{\n  json: {\n    enabled: schedEnabled && livePubEnabled,\n    scheduling_enabled: schedEnabled,\n    live_publish_enabled: livePubEnabled,\n    settings_verified: settingsOk,\n    worker_id: 'w03:' + execId,\n    sb_url: readCfg('SUPABASE_URL', 'https://cdgwdlhesgcxmswsamrj.supabase.co').value.replace(/\\/$/, ''),\n    n8n_url: readCfg('N8N_BASE_URL', 'https://137.23.61.127.sslip.io').value.replace(/\\/$/, ''),\n    default_ig_user_id: readCfg('INSTAGRAM_USER_ID', '17841453414532595').value\n  }\n}];"
+      },
+      "id": "50245c80-4e64-4c3e-bba6-6acafda5fb00",
       "name": "CODE | Check Schedule Gate & Read Config",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [340, 260],
-      "parameters": {
-        "jsCode": "// Safeguard marker: INSTAOPS_V2_SCHEDULE — gates SCHEDULING_ENABLED + LIVE_PUBLISH_ENABLED before calling instaops_claim_due_scheduled_posts on Supabase instaops_posts.\nfunction readCfg(key, fallback) {\n  var blocked = false;\n  try {\n    if (typeof $vars !== 'undefined' && $vars && $vars[key] !== undefined && $vars[key] !== null && $vars[key] !== '') {\n      return { value: String($vars[key]), blocked: false };\n    }\n  } catch (_) {}\n  try {\n    if (typeof $env !== 'undefined' && $env && $env[key] !== undefined && $env[key] !== null && $env[key] !== '') {\n      return { value: String($env[key]), blocked: false };\n    }\n  } catch (_) { blocked = true; }\n  return { value: fallback || '', blocked: blocked };\n}\n\nvar schedEnabled = readCfg('SCHEDULING_ENABLED', 'false').value.toLowerCase() === 'true';\nvar livePubEnabled = readCfg('LIVE_PUBLISH_ENABLED', 'false').value.toLowerCase() === 'true';\nvar execId = String((typeof $execution !== 'undefined' && $execution && $execution.id) || Date.now());\nreturn [{\n  json: {\n    enabled: schedEnabled && livePubEnabled,\n    worker_id: 'w03:' + execId,\n    sb_url: readCfg('SUPABASE_URL', 'https://cdgwdlhesgcxmswsamrj.supabase.co').value.replace(/\\/$/, ''),\n    n8n_url: readCfg('N8N_BASE_URL', 'https://137.23.61.127.sslip.io').value.replace(/\\/$/, ''),\n    default_ig_user_id: readCfg('INSTAGRAM_USER_ID', '17841453414532595').value\n  }\n}];"
-      }
+      "position": [
+        224,
+        240
+      ]
     },
     {
-      "id": "w03-if-enabled",
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ab62df75-183f-4037-a9d8-2f6490160a36",
+              "leftValue": "={{ $json.enabled }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "6d70cf6d-54ee-4853-8b1e-7ca16cc2c4e8",
       "name": "IF | Scheduling Enabled",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [560, 260],
-      "parameters": { "conditions": { "boolean": [{ "value1": "={{ $json.enabled }}", "value2": true }] } }
+      "position": [
+        448,
+        240
+      ]
     },
     {
-      "id": "w03-http-claim",
-      "name": "HTTP | Claim Due Scheduled Posts RPC",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "continueOnFail": true,
-      "position": [780, 200],
-      "credentials": { "httpCustomAuth": { "id": "CONFIGURE_IN_N8N", "name": "InstaOps Supabase Service Role Auth" } },
       "parameters": {
         "method": "POST",
         "url": "={{ $('CODE | Check Schedule Gate & Read Config').first().json.sb_url + '/rest/v1/rpc/instaops_claim_due_scheduled_posts' }}",
@@ -52,55 +112,107 @@
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ p_worker_id: $json.worker_id, p_limit: 1 }) }}",
-        "options": { "timeout": 20000, "response": { "response": { "fullResponse": true, "neverError": true } } }
-      }
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 20000
+        }
+      },
+      "id": "b5563488-a840-4654-8c58-321cf949c3ee",
+      "name": "HTTP | Claim Due Scheduled Posts RPC",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        656,
+        176
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
     },
     {
-      "id": "w03-validate-claim",
+      "parameters": {
+        "jsCode": "// Validates claimed SCHEDULED + LATER row (single or 2-10 CAROUSEL) with approved_revision === revision.\nvar cfg = $('CODE | Check Schedule Gate & Read Config').first().json;\nvar raw = $input.first().json || {};\nvar sc = raw.statusCode !== undefined ? Number(raw.statusCode) : (raw.error ? 0 : 200);\nvar body = raw.body !== undefined ? raw.body : raw;\nif (typeof body === 'string') { try { body = JSON.parse(body); } catch (_) { body = []; } }\nvar rows = !raw.error && sc < 300 && Array.isArray(body) ? body : [];\nif (!rows.length) {\n  return [{ json: { outcome: 'NONE' } }];\n}\nvar row = rows[0];\nvar mediaType = String(row.media_type || 'REEL').toUpperCase();\nvar activeAssets = Array.isArray(row.media_items) ? row.media_items : [];\nvar rev = Number(row.revision || 0);\nvar appRev = Number(row.approved_revision || 0);\nif (!rev || appRev !== rev || (mediaType === 'CAROUSEL' && (activeAssets.length < 2 || activeAssets.length > 10))) {\n  return [{ json: { outcome: 'PRECHECK_FAIL', post_uuid: String(row.post_uuid), lock_key: String(row.lock_key), lock_owner: String(row.lock_owner), job_id: String(row.job_id || '') } }];\n}\nreturn [{\n  json: {\n    outcome: 'DISPATCH',\n    post_uuid: String(row.post_uuid),\n    post_id: String(row.post_id),\n    lock_key: String(row.lock_key),\n    lock_owner: String(row.lock_owner),\n    job_id: String(row.job_id),\n    request_id: String(row.request_id),\n    dispatch_body: {\n      action: 'PUBLISH',\n      post_uuid: String(row.post_uuid),\n      post_id: String(row.post_id),\n      ig_user_id: String(row.ig_user_id || cfg.default_ig_user_id),\n      media_type: mediaType,\n      caption: String(row.caption || ''),\n      media_url: String(row.media_url || ''),\n      reviewed_revision: String(rev),\n      approved_revision: String(appRev),\n      confirm: true,\n      lock_key: String(row.lock_key),\n      lock_owner: String(row.lock_owner),\n      job_id: String(row.job_id),\n      request_id: String(row.request_id)\n    }\n  }\n}];"
+      },
+      "id": "a51b7856-868a-4de9-bdd1-572c4d2bed73",
       "name": "CODE | Validate Claimed Row & Build Dispatch",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1000, 200],
-      "parameters": {
-        "jsCode": "// Validates claimed SCHEDULED + LATER row (single or 2-10 CAROUSEL) with approved_revision === revision.\nvar cfg = $('CODE | Check Schedule Gate & Read Config').first().json;\nvar raw = $input.first().json || {};\nvar sc = raw.statusCode !== undefined ? Number(raw.statusCode) : (raw.error ? 0 : 200);\nvar body = raw.body !== undefined ? raw.body : raw;\nvar rows = !raw.error && sc < 300 && Array.isArray(body) ? body : [];\nif (!rows.length) {\n  return [{ json: { outcome: 'NONE' } }];\n}\nvar row = rows[0];\nvar mediaType = String(row.media_type || 'REEL').toUpperCase();\nvar activeAssets = Array.isArray(row.media_items) ? row.media_items : [];\nvar rev = Number(row.revision || 0);\nvar appRev = Number(row.approved_revision || 0);\nif (!rev || appRev !== rev || (mediaType === 'CAROUSEL' && (activeAssets.length < 2 || activeAssets.length > 10))) {\n  return [{ json: { outcome: 'PRECHECK_FAIL', post_uuid: String(row.post_uuid), lock_key: String(row.lock_key), lock_owner: String(row.lock_owner), job_id: String(row.job_id || '') } }];\n}\nreturn [{\n  json: {\n    outcome: 'DISPATCH',\n    post_uuid: String(row.post_uuid),\n    post_id: String(row.post_id),\n    lock_key: String(row.lock_key),\n    lock_owner: String(row.lock_owner),\n    job_id: String(row.job_id),\n    request_id: String(row.request_id),\n    dispatch_body: {\n      action: 'PUBLISH',\n      post_uuid: String(row.post_uuid),\n      post_id: String(row.post_id),\n      ig_user_id: String(row.ig_user_id || cfg.default_ig_user_id),\n      media_type: mediaType,\n      caption: String(row.caption || ''),\n      media_url: String(row.media_url || ''),\n      reviewed_revision: String(rev),\n      approved_revision: String(appRev),\n      confirm: true,\n      lock_key: String(row.lock_key),\n      lock_owner: String(row.lock_owner),\n      job_id: String(row.job_id),\n      request_id: String(row.request_id)\n    }\n  }\n}];"
-      }
+      "position": [
+        880,
+        176
+      ]
     },
     {
-      "id": "w03-switch-claim",
-      "name": "SWITCH | Route Claim Outcome",
-      "type": "n8n-nodes-base.switch",
-      "typeVersion": 3.2,
-      "position": [1220, 200],
       "parameters": {
         "rules": {
           "values": [
             {
-              "outputKey": "DISPATCH",
               "conditions": {
-                "options": { "caseSensitive": true, "typeValidation": "strict" },
-                "conditions": [{ "leftValue": "={{ $json.outcome }}", "rightValue": "DISPATCH", "operator": { "type": "string", "operation": "equals" } }]
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.outcome }}",
+                    "rightValue": "DISPATCH",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
               }
             },
             {
-              "outputKey": "PRECHECK_FAIL",
               "conditions": {
-                "options": { "caseSensitive": true, "typeValidation": "strict" },
-                "conditions": [{ "leftValue": "={{ $json.outcome }}", "rightValue": "PRECHECK_FAIL", "operator": { "type": "string", "operation": "equals" } }]
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.outcome }}",
+                    "rightValue": "PRECHECK_FAIL",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
               }
             }
           ]
         },
-        "options": { "fallbackOutput": "extra" }
-      }
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "702521d3-fd51-409b-8da8-f17a977c8609",
+      "name": "SWITCH | Route Claim Outcome",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1104,
+        176
+      ]
     },
     {
-      "id": "w03-http-precheck-fail",
-      "name": "HTTP | Mark Post Precheck Failed",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "continueOnFail": true,
-      "position": [1460, 340],
-      "credentials": { "httpCustomAuth": { "id": "CONFIGURE_IN_N8N", "name": "InstaOps Supabase Service Role Auth" } },
       "parameters": {
         "method": "PATCH",
         "url": "={{ $('CODE | Check Schedule Gate & Read Config').first().json.sb_url + '/rest/v1/instaops_posts?id=eq.' + encodeURIComponent($json.post_uuid) }}",
@@ -109,17 +221,33 @@
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ status: 'FAILED', error_code: 'SCHEDULE_PRECHECK_FAILED', error: 'Invalid carousel assets or revision mismatch on scheduled claim' }) }}",
-        "options": { "timeout": 15000, "response": { "response": { "fullResponse": true, "neverError": true } } }
-      }
-    },
-    {
-      "id": "w03-http-release-precheck",
-      "name": "HTTP | Release Precheck Lock",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "9784ff26-143f-48af-8dba-c42521873c80",
+      "name": "HTTP | Mark Post Precheck Failed",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "continueOnFail": true,
-      "position": [1680, 340],
-      "credentials": { "httpCustomAuth": { "id": "CONFIGURE_IN_N8N", "name": "InstaOps Supabase Service Role Auth" } },
+      "position": [
+        1344,
+        320
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
       "parameters": {
         "method": "POST",
         "url": "={{ $('CODE | Check Schedule Gate & Read Config').first().json.sb_url + '/rest/v1/rpc/instaops_release_lock' }}",
@@ -128,17 +256,33 @@
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ p_lock_key: $('CODE | Validate Claimed Row & Build Dispatch').first().json.lock_key, p_owner_id: $('CODE | Validate Claimed Row & Build Dispatch').first().json.lock_owner }) }}",
-        "options": { "timeout": 15000, "response": { "response": { "fullResponse": true, "neverError": true } } }
-      }
-    },
-    {
-      "id": "w03-trigger-w02",
-      "name": "HTTP | Trigger W02 Publish Webhook",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "67faa0a8-a133-4d09-96b9-0c635521f65a",
+      "name": "HTTP | Release Precheck Lock",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "continueOnFail": true,
-      "position": [1460, 120],
-      "credentials": { "httpHeaderAuth": { "id": "CONFIGURE_IN_N8N", "name": "InstaOps Webhook Secret (x-dashboard-secret)" } },
+      "position": [
+        1568,
+        320
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
       "parameters": {
         "method": "POST",
         "url": "={{ $('CODE | Check Schedule Gate & Read Config').first().json.n8n_url + '/webhook/instaops-publish-v1' }}",
@@ -147,55 +291,107 @@
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify($json.dispatch_body) }}",
-        "options": { "timeout": 30000, "response": { "response": { "fullResponse": true, "neverError": true } } }
-      }
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "a566ab72-8325-4920-aed1-d2efe7559f80",
+      "name": "HTTP | Trigger W02 Publish Webhook",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1344,
+        96
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "CONFIGURE_WEBHOOK",
+          "name": "InstaOps Webhook Secret (x-dashboard-secret)"
+        }
+      },
+      "continueOnFail": true
     },
     {
-      "id": "w03-classify-dispatch",
+      "parameters": {
+        "jsCode": "var claimed = $('CODE | Validate Claimed Row & Build Dispatch').first().json;\nvar raw = $input.first().json || {};\nvar netErr = Boolean(raw.error && raw.statusCode === undefined);\nvar sc = raw.statusCode !== undefined ? Number(raw.statusCode) : (netErr ? 0 : 200);\nvar body = raw.body !== undefined ? raw.body : raw;\nif (typeof body === 'string') { try { body = JSON.parse(body); } catch (_) { body = {}; } }\nbody = body || {};\nif (!netErr && sc >= 200 && sc < 300 && body.accepted === true) {\n  return [{ json: { status: 'ACCEPTED', post_uuid: claimed.post_uuid, post_id: claimed.post_id, execution_id: body.execution_id || '' } }];\n}\nif (!netErr && sc >= 400 && sc < 500) {\n  return [{ json: { status: 'REJECTED_4XX', post_uuid: claimed.post_uuid, lock_key: claimed.lock_key, lock_owner: claimed.lock_owner, job_id: claimed.job_id, detail: JSON.stringify(body).slice(0, 300) } }];\n}\nvar errDetail = netErr ? String(raw.error.message || 'timeout') : ('HTTP ' + sc);\nreturn [{ json: { status: 'UNCERTAIN', post_uuid: claimed.post_uuid, job_id: claimed.job_id, detail: 'Uncertain scheduled W02 dispatch: ' + errDetail } }];"
+      },
+      "id": "2001d580-9670-4126-a5dd-dcbeaee73d78",
       "name": "CODE | Classify W02 Dispatch Result",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1680, 120],
-      "parameters": {
-        "jsCode": "var claimed = $('CODE | Validate Claimed Row & Build Dispatch').first().json;\nvar raw = $input.first().json || {};\nvar netErr = Boolean(raw.error && raw.statusCode === undefined);\nvar sc = raw.statusCode !== undefined ? Number(raw.statusCode) : (netErr ? 0 : 200);\nvar body = raw.body !== undefined ? raw.body : raw;\nif (typeof body === 'string') { try { body = JSON.parse(body); } catch (_) { body = {}; } }\nbody = body || {};\nif (!netErr && sc >= 200 && sc < 300 && body.accepted === true) {\n  return [{ json: { status: 'ACCEPTED', post_uuid: claimed.post_uuid, post_id: claimed.post_id, execution_id: body.execution_id || '' } }];\n}\nif (!netErr && sc >= 400 && sc < 500) {\n  return [{ json: { status: 'REJECTED_4XX', post_uuid: claimed.post_uuid, lock_key: claimed.lock_key, lock_owner: claimed.lock_owner, job_id: claimed.job_id, detail: JSON.stringify(body).slice(0, 300) } }];\n}\nvar errDetail = netErr ? String(raw.error.message || 'timeout') : ('HTTP ' + sc);\nreturn [{ json: { status: 'UNCERTAIN', post_uuid: claimed.post_uuid, job_id: claimed.job_id, detail: 'Uncertain scheduled W02 dispatch: ' + errDetail } }];"
-      }
+      "position": [
+        1568,
+        96
+      ]
     },
     {
-      "id": "w03-switch-dispatch",
-      "name": "SWITCH | Dispatch Outcome",
-      "type": "n8n-nodes-base.switch",
-      "typeVersion": 3.2,
-      "position": [1900, 120],
       "parameters": {
         "rules": {
           "values": [
             {
-              "outputKey": "REJECTED_4XX",
               "conditions": {
-                "options": { "caseSensitive": true, "typeValidation": "strict" },
-                "conditions": [{ "leftValue": "={{ $json.status }}", "rightValue": "REJECTED_4XX", "operator": { "type": "string", "operation": "equals" } }]
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.status }}",
+                    "rightValue": "REJECTED_4XX",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
               }
             },
             {
-              "outputKey": "UNCERTAIN",
               "conditions": {
-                "options": { "caseSensitive": true, "typeValidation": "strict" },
-                "conditions": [{ "leftValue": "={{ $json.status }}", "rightValue": "UNCERTAIN", "operator": { "type": "string", "operation": "equals" } }]
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.status }}",
+                    "rightValue": "UNCERTAIN",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
               }
             }
           ]
         },
-        "options": { "fallbackOutput": "extra" }
-      }
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "f1254ca4-1582-47a6-b45b-78af58ca65c1",
+      "name": "SWITCH | Dispatch Outcome",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1776,
+        96
+      ]
     },
     {
-      "id": "w03-http-reset-4xx",
-      "name": "HTTP | Reset Post READY On 4xx",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "continueOnFail": true,
-      "position": [2140, 20],
-      "credentials": { "httpCustomAuth": { "id": "CONFIGURE_IN_N8N", "name": "InstaOps Supabase Service Role Auth" } },
       "parameters": {
         "method": "PATCH",
         "url": "={{ $('CODE | Check Schedule Gate & Read Config').first().json.sb_url + '/rest/v1/instaops_posts?id=eq.' + encodeURIComponent($json.post_uuid) }}",
@@ -204,17 +400,33 @@
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ status: 'READY', error_code: 'SCHEDULE_DISPATCH_REJECTED', error: $json.detail }) }}",
-        "options": { "timeout": 15000, "response": { "response": { "fullResponse": true, "neverError": true } } }
-      }
-    },
-    {
-      "id": "w03-http-fail-job-4xx",
-      "name": "HTTP | Fail Job On 4xx",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "1123bd61-4ad9-4e96-b446-c50ff01fd351",
+      "name": "HTTP | Reset Post READY On 4xx",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "continueOnFail": true,
-      "position": [2360, 20],
-      "credentials": { "httpCustomAuth": { "id": "CONFIGURE_IN_N8N", "name": "InstaOps Supabase Service Role Auth" } },
+      "position": [
+        2016,
+        0
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
       "parameters": {
         "method": "PATCH",
         "url": "={{ $('CODE | Check Schedule Gate & Read Config').first().json.sb_url + '/rest/v1/instaops_jobs?job_id=eq.' + encodeURIComponent($('CODE | Classify W02 Dispatch Result').first().json.job_id) }}",
@@ -223,17 +435,33 @@
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ status: 'FAILED', stage: 'DISPATCH_REJECTED', finished_at: new Date().toISOString() }) }}",
-        "options": { "timeout": 15000, "response": { "response": { "fullResponse": true, "neverError": true } } }
-      }
-    },
-    {
-      "id": "w03-http-release-4xx",
-      "name": "HTTP | Release Scheduled Lock On 4xx",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "0084f6b1-ba92-4162-873f-fd8da341a754",
+      "name": "HTTP | Fail Job On 4xx",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "continueOnFail": true,
-      "position": [2580, 20],
-      "credentials": { "httpCustomAuth": { "id": "CONFIGURE_IN_N8N", "name": "InstaOps Supabase Service Role Auth" } },
+      "position": [
+        2240,
+        0
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
       "parameters": {
         "method": "POST",
         "url": "={{ $('CODE | Check Schedule Gate & Read Config').first().json.sb_url + '/rest/v1/rpc/instaops_release_lock' }}",
@@ -242,17 +470,33 @@
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ p_lock_key: $('CODE | Classify W02 Dispatch Result').first().json.lock_key, p_owner_id: $('CODE | Classify W02 Dispatch Result').first().json.lock_owner }) }}",
-        "options": { "timeout": 15000, "response": { "response": { "fullResponse": true, "neverError": true } } }
-      }
-    },
-    {
-      "id": "w03-http-uncertain-post",
-      "name": "HTTP | Mark Post VERIFY_MANUALLY On Timeout",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "3337d467-844e-443d-86e4-de5cae6d5adb",
+      "name": "HTTP | Release Scheduled Lock On 4xx",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "continueOnFail": true,
-      "position": [2140, 200],
-      "credentials": { "httpCustomAuth": { "id": "CONFIGURE_IN_N8N", "name": "InstaOps Supabase Service Role Auth" } },
+      "position": [
+        2464,
+        0
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
       "parameters": {
         "method": "PATCH",
         "url": "={{ $('CODE | Check Schedule Gate & Read Config').first().json.sb_url + '/rest/v1/instaops_posts?id=eq.' + encodeURIComponent($json.post_uuid) }}",
@@ -261,17 +505,33 @@
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ status: 'VERIFY_MANUALLY', error_code: 'PUBLISH_OUTCOME_UNKNOWN', error: $json.detail }) }}",
-        "options": { "timeout": 15000, "response": { "response": { "fullResponse": true, "neverError": true } } }
-      }
-    },
-    {
-      "id": "w03-http-uncertain-job",
-      "name": "HTTP | Mark Job OUTCOME_UNKNOWN On Timeout",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "83027407-6fdc-43f5-b5b3-767cc807975f",
+      "name": "HTTP | Mark Post VERIFY_MANUALLY On Timeout",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "continueOnFail": true,
-      "position": [2360, 200],
-      "credentials": { "httpCustomAuth": { "id": "CONFIGURE_IN_N8N", "name": "InstaOps Supabase Service Role Auth" } },
+      "position": [
+        2016,
+        176
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
       "parameters": {
         "method": "PATCH",
         "url": "={{ $('CODE | Check Schedule Gate & Read Config').first().json.sb_url + '/rest/v1/instaops_jobs?job_id=eq.' + encodeURIComponent($('CODE | Classify W02 Dispatch Result').first().json.job_id) }}",
@@ -280,33 +540,208 @@
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ status: 'OUTCOME_UNKNOWN', stage: 'OUTCOME_UNKNOWN' }) }}",
-        "options": { "timeout": 15000, "response": { "response": { "fullResponse": true, "neverError": true } } }
-      }
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "09116a0a-6f02-4b64-8a09-305bafe7dc4c",
+      "name": "HTTP | Mark Job OUTCOME_UNKNOWN On Timeout",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2240,
+        176
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
     }
   ],
   "connections": {
-    "SCHEDULE | Every 5 Minutes (Disabled By Default)": { "main": [[{ "node": "CODE | Check Schedule Gate & Read Config", "type": "main", "index": 0 }]] },
-    "CODE | Check Schedule Gate & Read Config": { "main": [[{ "node": "IF | Scheduling Enabled", "type": "main", "index": 0 }]] },
-    "IF | Scheduling Enabled": { "main": [[{ "node": "HTTP | Claim Due Scheduled Posts RPC", "type": "main", "index": 0 }]] },
-    "HTTP | Claim Due Scheduled Posts RPC": { "main": [[{ "node": "CODE | Validate Claimed Row & Build Dispatch", "type": "main", "index": 0 }]] },
-    "CODE | Validate Claimed Row & Build Dispatch": { "main": [[{ "node": "SWITCH | Route Claim Outcome", "type": "main", "index": 0 }]] },
+    "SCHEDULE | Every 5 Minutes (Disabled By Default)": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Read Runtime Settings RPC",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Read Runtime Settings RPC": {
+      "main": [
+        [
+          {
+            "node": "CODE | Check Schedule Gate & Read Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Check Schedule Gate & Read Config": {
+      "main": [
+        [
+          {
+            "node": "IF | Scheduling Enabled",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF | Scheduling Enabled": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Claim Due Scheduled Posts RPC",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Claim Due Scheduled Posts RPC": {
+      "main": [
+        [
+          {
+            "node": "CODE | Validate Claimed Row & Build Dispatch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Validate Claimed Row & Build Dispatch": {
+      "main": [
+        [
+          {
+            "node": "SWITCH | Route Claim Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "SWITCH | Route Claim Outcome": {
       "main": [
-        [{ "node": "HTTP | Trigger W02 Publish Webhook", "type": "main", "index": 0 }],
-        [{ "node": "HTTP | Mark Post Precheck Failed", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "HTTP | Trigger W02 Publish Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HTTP | Mark Post Precheck Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
-    "HTTP | Mark Post Precheck Failed": { "main": [[{ "node": "HTTP | Release Precheck Lock", "type": "main", "index": 0 }]] },
-    "HTTP | Trigger W02 Publish Webhook": { "main": [[{ "node": "CODE | Classify W02 Dispatch Result", "type": "main", "index": 0 }]] },
-    "CODE | Classify W02 Dispatch Result": { "main": [[{ "node": "SWITCH | Dispatch Outcome", "type": "main", "index": 0 }]] },
+    "HTTP | Mark Post Precheck Failed": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Release Precheck Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Trigger W02 Publish Webhook": {
+      "main": [
+        [
+          {
+            "node": "CODE | Classify W02 Dispatch Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Classify W02 Dispatch Result": {
+      "main": [
+        [
+          {
+            "node": "SWITCH | Dispatch Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "SWITCH | Dispatch Outcome": {
       "main": [
-        [{ "node": "HTTP | Reset Post READY On 4xx", "type": "main", "index": 0 }],
-        [{ "node": "HTTP | Mark Post VERIFY_MANUALLY On Timeout", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "HTTP | Reset Post READY On 4xx",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HTTP | Mark Post VERIFY_MANUALLY On Timeout",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
-    "HTTP | Reset Post READY On 4xx": { "main": [[{ "node": "HTTP | Fail Job On 4xx", "type": "main", "index": 0 }]] },
-    "HTTP | Fail Job On 4xx": { "main": [[{ "node": "HTTP | Release Scheduled Lock On 4xx", "type": "main", "index": 0 }]] },
-    "HTTP | Mark Post VERIFY_MANUALLY On Timeout": { "main": [[{ "node": "HTTP | Mark Job OUTCOME_UNKNOWN On Timeout", "type": "main", "index": 0 }]] }
+    "HTTP | Reset Post READY On 4xx": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Fail Job On 4xx",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Fail Job On 4xx": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Release Scheduled Lock On 4xx",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Mark Post VERIFY_MANUALLY On Timeout": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Mark Job OUTCOME_UNKNOWN On Timeout",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "name": "InstaOps W03 - Scheduled Runner",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": true
   }
 }

@@ -15,25 +15,25 @@ A complete, safety-hardened Instagram content operations platform powered by **S
 ## Database Initialization vs Upgrade (Supabase SQL Editor)
 
 - **Fresh Database Setup:** Execute `supabase/INSTALL_FRESH.sql` in your Supabase SQL Editor (`https://cdgwdlhesgcxmswsamrj.supabase.co`).
-- **Existing Initialized Dev Database (Non-Destructive Upgrade):** Execute `supabase/migrations/006_upgrade_reliability.sql` in the Supabase SQL Editor. It safely adds new columns (`child_container_ids`, `ig_child_container_id`, `lock_key`, `lock_owner`, `source_revision`), indexes, hardened RPCs (`instaops_transfer_or_claim_lock`, `instaops_renew_lock`, `instaops_approve_post_revision`, `instaops_claim_due_scheduled_posts`, `instaops_finalize_extraction`, `instaops_finalize_deletion`, `instaops_recover_stale_sync_jobs`, `instaops_verify_health_and_rpc`), and `service_role` execute grants **without dropping or resetting any existing tables or rows**.
+- **Existing Initialized Dev Database (Non-Destructive Upgrade):** Execute `supabase/migrations/007_upgrade_locks_and_settings.sql` in the Supabase SQL Editor (after `006_upgrade_reliability.sql`). It non-destructively adds `public.instaops_runtime_settings` (`live_publish_enabled`, `live_delete_enabled`, `scheduling_enabled` initialized `false`), enforces unexpired lock ownership (`expires_at >= NOW()`) in `instaops_renew_lock`, `instaops_finalize_extraction`, and `instaops_finalize_deletion`, and updates `instaops_verify_health_and_rpc()` **without dropping any existing tables or rows**.
 
 ## Quick Start (Windows PowerShell)
 
-1. Run `supabase/migrations/006_upgrade_reliability.sql` (or `supabase/INSTALL_FRESH.sql` on an empty DB).
+1. Run `supabase/migrations/007_upgrade_locks_and_settings.sql` (or `supabase/INSTALL_FRESH.sql` on an empty DB).
 2. Configure `.env.local` from `.env.example` (set your Supabase `anon` and `service_role` keys, rotated n8n credentials, or `DEMO_MODE=true` for offline preview).
-3. Run verification & build commands:
+3. Run offline & live verification commands:
    ```powershell
    cd c:\Users\vikas\Downloads\Instagram_Manager_NextJS_Complete\InstaOps-v2-Advanced
-   npm install
    npm run typecheck
    npm run lint
    npm test
    npm run test:integration
+   npm run check:config
    npm run check:workflows
    npm run verify:supabase
    npm run build
    ```
-4. Start the console:
+4. Once `W00`–`W05` are cleanly imported and `W05`/`W04` are active on `https://137.23.61.127.sslip.io`, run `npm run check:connection` and start the console:
    ```powershell
    npm run dev
    ```

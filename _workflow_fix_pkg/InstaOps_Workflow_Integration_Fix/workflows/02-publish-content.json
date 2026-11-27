@@ -1,0 +1,3688 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "instaops-publish-v1",
+        "responseMode": "responseNode",
+        "options": {},
+        "authentication": "headerAuth"
+      },
+      "id": "e774d951-5ea9-4e68-84ef-a9d428570184",
+      "name": "WEBHOOK | Publish Request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        800
+      ],
+      "webhookId": "0715afe4-d0d5-4847-b2e1-e6b5f1cdb22a",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "CONFIGURE_WEBHOOK",
+          "name": "InstaOps Webhook Secret (x-dashboard-secret)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Safeguard marker: INSTAOPS_V2_PUBLISH — Meta Graph API v22.0 via native HTTP Request & Wait nodes for Reels, Images, and 2-10 Mixed Carousels.\nfunction readCfg(key, fallback) {\n  var blocked = false;\n  try { if (typeof $vars !== 'undefined' && $vars && $vars[key] !== undefined && $vars[key] !== null && $vars[key] !== '') return { value: String($vars[key]), source: 'vars', blocked: false }; } catch (_) {}\n  try { if (typeof $env !== 'undefined' && $env && $env[key] !== undefined && $env[key] !== null && $env[key] !== '') return { value: String($env[key]), source: 'env', blocked: false }; } catch (_) { blocked = true; }\n  return { value: fallback || '', source: fallback ? 'default' : 'missing', blocked: blocked };\n}\n\nvar item = $input.first().json || {};\nvar body = item.body || item;\nvar livePubCfg = ({value: 'false', source: 'operator-disabled', blocked: false});\n\nvar postUuid = String(body.post_uuid || '').trim();\nvar postId = String(body.post_id || '').trim();\nvar reviewedRevision = String(body.reviewed_revision || '').trim();\nvar approvedRevision = String(body.approved_revision || '').trim();\nvar uuidOk = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(postUuid);\nvar livePubEnabled = livePubCfg.value.toLowerCase() === 'true';\n\nvar error = '';\nvar httpStatus = 202;\nif (livePubCfg.blocked && livePubCfg.source === 'missing') {\n  error = 'n8n $env access denied for LIVE_PUBLISH_ENABLED flag.';\n  httpStatus = 500;\n} else if (!livePubEnabled) {\n  error = 'Live publishing blocked inside W02: LIVE_PUBLISH_ENABLED is not true.';\n  httpStatus = 409;\n} else if (body.confirm !== true || !uuidOk || !postId || !reviewedRevision) {\n  error = 'Explicit confirm: true, valid post_uuid, post_id, and reviewed_revision are required.';\n  httpStatus = 422;\n} else if (approvedRevision && approvedRevision !== reviewedRevision) {\n  error = 'Approval revision mismatch in publish request.';\n  httpStatus = 409;\n}\n\nvar execId = String((typeof $execution !== 'undefined' && $execution && $execution.id) || '');\nvar reqId = String(body.request_id || '');\nreturn [{\n  json: {\n    valid: !error,\n    error: error,\n    httpStatus: httpStatus,\n    live_publish_enabled: livePubEnabled,\n    post_uuid: postUuid,\n    post_id: postId,\n    ig_user_id: String(body.ig_user_id || readCfg('INSTAGRAM_USER_ID', '17841453414532595').value).trim(),\n    reviewed_revision: reviewedRevision,\n    approved_revision: approvedRevision || reviewedRevision,\n    request_id: reqId,\n    job_id: String(body.job_id || ''),\n    lock_key: String(body.lock_key || ('post:' + postUuid)),\n    lock_owner: String(body.lock_owner || ''),\n    worker_owner: 'w02:' + (execId || reqId || Date.now()),\n    execution_id: execId,\n    sb_url: readCfg('SUPABASE_URL', 'https://cdgwdlhesgcxmswsamrj.supabase.co').value.replace(/\\/$/, ''),\n    graph_ver: readCfg('INSTAGRAM_GRAPH_VERSION', 'v22.0').value || 'v22.0',\n    poll_interval_sec: Math.max(0, Math.min(30, Number(readCfg('N8N_GRAPH_POLL_INTERVAL_SEC', '4').value) || 4)),\n    max_polls: Math.max(1, Math.min(30, Number(readCfg('N8N_GRAPH_MAX_POLLS', '15').value) || 15)),\n    started_at: new Date().toISOString(),\n    _untrusted_request_media_ignored: true\n  }\n}];"
+      },
+      "id": "9b74d66b-42be-4069-919b-3b1e1465113e",
+      "name": "CODE | Verify Auth & Approval Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "f0a3b96f-ab60-4370-b2ed-65785f325b50",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "9159a1af-aef3-4acd-b1ed-0d2d5b4432c3",
+      "name": "IF | Passed Request Guard",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        448,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: false, error: $json.error }) }}",
+        "options": {
+          "responseCode": "={{ $json.httpStatus || 422 }}"
+        }
+      },
+      "id": "e1799ac1-8273-4d89-903a-300ea685b4de",
+      "name": "RESPOND | Reject 4xx",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        688,
+        960
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ accepted: true, execution_id: $json.execution_id, post_uuid: $json.post_uuid, post_id: $json.post_id, job_id: $json.job_id, request_id: $json.request_id, lock_key: $json.lock_key }) }}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "id": "a73296f6-c9f2-411f-b352-d845d0cb0910",
+      "name": "RESPOND | Accepted 202",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        688,
+        656
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/rpc/instaops_transfer_or_claim_lock' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_lock_key: $('CODE | Verify Auth & Approval Gate').first().json.lock_key, p_post_uuid: $('CODE | Verify Auth & Approval Gate').first().json.post_uuid, p_post_id: $('CODE | Verify Auth & Approval Gate').first().json.post_id, p_operation: 'PUBLISH', p_expected_owner: $('CODE | Verify Auth & Approval Gate').first().json.lock_owner || '', p_new_owner: $('CODE | Verify Auth & Approval Gate').first().json.worker_owner, p_request_id: $('CODE | Verify Auth & Approval Gate').first().json.request_id, p_lease_seconds: 600 }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 20000
+        }
+      },
+      "id": "205f8f6f-9700-4270-aa29-7e1929f668a4",
+      "name": "HTTP | Transfer Publish Lock",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        896,
+        656
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "var raw = $input.first().json || {};\nvar sc = raw.statusCode !== undefined ? Number(raw.statusCode) : (raw.error ? 0 : 200);\nvar body = raw.body !== undefined ? raw.body : raw;\nvar rows = Array.isArray(body) ? body : [body];\nvar row = rows[0] || {};\nvar acquired = !raw.error && sc < 300 && row.acquired === true;\nreturn [{ json: { acquired: acquired, reason: String(row.reason || (raw.error && raw.error.message) || 'Publish lock conflict') } }];"
+      },
+      "id": "6a4c557c-2788-4cd6-b5c9-82d36947076a",
+      "name": "CODE | Check Publish Lock",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        656
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a049b57f-e0f7-47a2-9365-4526228027b5",
+              "leftValue": "={{ $json.acquired }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a204788e-c6d6-49ce-ac9a-99c3ec5e8114",
+      "name": "IF | Publish Lock Acquired",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1344,
+        656
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/instaops_jobs?job_id=eq.' + encodeURIComponent($('CODE | Verify Auth & Approval Gate').first().json.job_id || 'none') }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ status: 'FAILED', stage: 'LOCK_CONFLICT', execution_id: $('CODE | Verify Auth & Approval Gate').first().json.execution_id, error_code: 'POST_LOCKED', error_message: $json.reason, finished_at: new Date().toISOString() }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "974317e9-ee55-4244-ae9f-7f02703cdfad",
+      "name": "HTTP | Mark Job Publish Lock Conflict",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1584,
+        848
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/instaops_posts?id=eq.' + encodeURIComponent($('CODE | Verify Auth & Approval Gate').first().json.post_uuid) + '&select=*' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "f51f086e-5328-4be9-8762-efbe0827387b",
+      "name": "HTTP | Load Authoritative Post",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1584,
+        624
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/instaops_media_assets?post_uuid=eq.' + encodeURIComponent($('CODE | Verify Auth & Approval Gate').first().json.post_uuid) + '&storage_status=eq.ACTIVE&order=media_index.asc' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "e6b36c95-95ae-4773-a8fc-327580d7dc7a",
+      "name": "HTTP | Load Active MediaAssets",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1808,
+        624
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/instaops_accounts?ig_user_id=eq.' + encodeURIComponent(((Array.isArray($('HTTP | Load Authoritative Post').first().json.body) ? $('HTTP | Load Authoritative Post').first().json.body[0] : ($('HTTP | Load Authoritative Post').first().json.body || {})) || {}).ig_user_id || $('CODE | Verify Auth & Approval Gate').first().json.ig_user_id) + '&limit=1' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "9fc62b09-c493-4e2c-9c37-ece722e6cfe9",
+      "name": "HTTP | Load Destination Account",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2016,
+        624
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Authoritative DB gate: ignores request media URLs, verifies logical-OR revision (reqRev !== currentRev || approvedRev !== currentRev), account enabled, and ordered ACTIVE assets.\nfunction isSafeHttpsUrl(raw) {\n  try {\n    var u = new URL(String(raw || '').trim());\n    return u.protocol === 'https:' && !/^(127\\.|10\\.|192\\.168\\.|169\\.254\\.)/.test(u.hostname);\n  } catch (_) { return false; }\n}\nfunction unpack(raw) {\n  var r = raw || {};\n  var b = r.body !== undefined ? r.body : r;\n  return b;\n}\n\nvar req = $('CODE | Verify Auth & Approval Gate').first().json;\nvar postRaw = unpack($('HTTP | Load Authoritative Post').first().json);\nvar post = Array.isArray(postRaw) ? postRaw[0] : postRaw;\nvar assetsRaw = unpack($('HTTP | Load Active MediaAssets').first().json);\nvar assets = (Array.isArray(assetsRaw) ? assetsRaw : []).filter(function (a) { return a && a.storage_status === 'ACTIVE'; }).sort(function (a, b) { return Number(a.media_index || 0) - Number(b.media_index || 0); });\nvar acctRaw = unpack($('HTTP | Load Destination Account').first().json);\nvar acct = Array.isArray(acctRaw) ? acctRaw[0] : acctRaw;\n\nfunction fail(code, msg) {\n  return [{ json: { gate_ok: false, errCode: code, errMsg: msg, currentRev: Number((post && post.revision) || 0), post: post || {} } }];\n}\n\nif (!req.live_publish_enabled) return fail('CONFIGURATION_ERROR', 'LIVE_PUBLISH_ENABLED is false inside W02.');\nif (!post || !post.id) return fail('POST_NOT_FOUND', 'Post UUID ' + req.post_uuid + ' not found in Supabase.');\nvar currentRev = Number(post.revision || 0);\nvar reqRev = Number(req.reviewed_revision || 0);\nvar approvedRev = Number(post.approved_revision || 0);\n\nif (post.deleted_at || post.status === 'DELETED' || post.status === 'ARCHIVED') return fail('POST_DELETED_OR_ARCHIVED', 'Cannot publish deleted or archived post.');\nif (post.status === 'PUBLISHED' || (post.published_id && String(post.published_id).trim() !== '')) return fail('ALREADY_PUBLISHED', 'Post is already published (' + post.published_id + ').');\nif (post.status !== 'READY' && post.status !== 'SCHEDULED') return fail('POST_LOCKED', 'Post status ' + post.status + ' is not eligible for publishing.');\nif (!currentRev || !reqRev || !approvedRev || reqRev !== currentRev || approvedRev !== currentRev) {\n  return fail('REVISION_CONFLICT', 'Revision mismatch (db=' + currentRev + ', approved=' + approvedRev + ', reviewed=' + reqRev + ').');\n}\nif (String(post.id)!==req.post_uuid || String(post.post_id)!==req.post_id || String(post.ig_user_id)!==req.ig_user_id || !acct || String(acct.ig_user_id)!==String(post.ig_user_id) || acct.enabled !== true) return fail('ACCOUNT_DISABLED', 'Destination Instagram account is disabled or missing in instaops_accounts.');\n\nvar caption = String(post.caption ?? post.original_caption ?? '');\nif (caption.length > 2200) return fail('CAPTION_TOO_LONG', 'Caption exceeds Meta Graph 2,200 character limit.');\nvar mediaType = String(post.media_type || (assets.length > 1 ? 'CAROUSEL' : 'REEL')).toUpperCase();\nif (Number(post.media_count)!==assets.length) return fail('INCOMPLETE_MEDIA','Asset count does not match reviewed post.');\nif (mediaType === 'CAROUSEL') {\n  if (assets.length < 2 || assets.length > 10) return fail('INVALID_CAROUSEL_COUNT', 'Carousel requires 2-10 ACTIVE assets (found ' + assets.length + ').');\n} else if (assets.length !== 1) {\n  return fail('MISSING_MEDIA_ASSET', mediaType + ' requires exactly 1 ACTIVE DB asset (found ' + assets.length + ').');\n}\nfor (var ai = 0; ai < assets.length; ai++) {\n  if (Number(assets[ai].media_index)!==ai || String(assets[ai].post_uuid)!==req.post_uuid || !isSafeHttpsUrl(assets[ai].secure_url) || !String(assets[ai].secure_url).startsWith('https://res.cloudinary.com/djkkknb9k/')) return fail('INVALID_MEDIA_URL', 'DB asset ' + ai + ' has missing or unsafe HTTPS URL.');\n}\n\nreturn [{\n  json: {\n    gate_ok: true,\n    post: post,\n    currentRev: currentRev,\n    dest_ig_user_id: String(post.ig_user_id || req.ig_user_id).trim(),\n    media_type: mediaType,\n    is_carousel: mediaType === 'CAROUSEL',\n    caption: caption,\n    assets: assets,\n    nextChildIdx: 0,\n    childIds: [],\n    pollChildIdx: 0,\n    pollAttempt: 0,\n    parentContainerId: ''\n  }\n}];"
+      },
+      "id": "d1eb5d81-0cb2-43ea-871a-8c552fc8e2b9",
+      "name": "CODE | Authoritative Publish Eligibility Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        624
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "bd7543bc-69af-4daf-ad52-fe0d3d88f9ca",
+              "leftValue": "={{ $json.gate_ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "eaf321d5-7bd0-4b14-b413-d26082be25c5",
+      "name": "IF | Passed Authoritative Gate",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2464,
+        624
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/instaops_jobs?job_id=eq.' + encodeURIComponent($('CODE | Verify Auth & Approval Gate').first().json.job_id || 'none') }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ status: 'FAILED', stage: 'VALIDATING', execution_id: $('CODE | Verify Auth & Approval Gate').first().json.execution_id, error_code: $json.errCode, error_message: $json.errMsg, finished_at: new Date().toISOString() }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "df6fe36b-8681-4227-ac56-68c14e888315",
+      "name": "HTTP | Mark Job Gate Rejected",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2704,
+        864
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/rpc/instaops_release_lock' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_lock_key: $('CODE | Verify Auth & Approval Gate').first().json.lock_key, p_owner_id: $('CODE | Verify Auth & Approval Gate').first().json.worker_owner }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "fc2f744c-6486-4786-b292-54a1eedc660c",
+      "name": "HTTP | Release Lock (Gate Rejected)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2928,
+        864
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/instaops_posts?id=eq.' + encodeURIComponent($('CODE | Verify Auth & Approval Gate').first().json.post_uuid) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ status: 'PUBLISHING', execution_id: $('CODE | Verify Auth & Approval Gate').first().json.execution_id, request_id: $('CODE | Verify Auth & Approval Gate').first().json.request_id, error: '', error_code: '', error_stage: '' }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        }
+      },
+      "id": "e08b4c48-2960-4b84-ba7c-faf3303ed2be",
+      "name": "HTTP | Mark Post PUBLISHING",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2704,
+        544
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/instaops_jobs?job_id=eq.' + encodeURIComponent($('CODE | Verify Auth & Approval Gate').first().json.job_id || 'none') }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ status: 'RUNNING', stage: 'CREATING_CONTAINER', execution_id: $('CODE | Verify Auth & Approval Gate').first().json.execution_id, lock_key: $('CODE | Verify Auth & Approval Gate').first().json.lock_key, lock_owner: $('CODE | Verify Auth & Approval Gate').first().json.worker_owner }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        }
+      },
+      "id": "ccdc9947-db56-411c-82ba-5b7df8b9516a",
+      "name": "HTTP | Mark Job CREATING_CONTAINER",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2928,
+        544
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "21cd6049-dd14-4943-8cbd-8563a568fdf5",
+              "leftValue": "={{ $('CODE | Authoritative Publish Eligibility Gate').first().json.is_carousel }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "f2546325-bd7b-4b45-8bdf-6266dc481420",
+      "name": "IF | Is Carousel Post",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3136,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "var req = $('CODE | Verify Auth & Approval Gate').first().json;\nvar g = $('CODE | Authoritative Publish Eligibility Gate').first().json;\nvar ast = g.assets[0];\nvar payload = (g.media_type === 'IMAGE' && String(ast.resource_type || '') !== 'video')\n  ? { image_url: ast.secure_url, caption: g.caption }\n  : { media_type: 'REELS', video_url: ast.secure_url, caption: g.caption };\nreturn [{ json: { graph_url: 'https://graph.facebook.com/' + encodeURIComponent(req.graph_ver) + '/' + encodeURIComponent(g.dest_ig_user_id) + '/media', payload: payload, childIds: [] } }];"
+      },
+      "id": "0378b542-c558-4da2-9ce8-76352cf590d7",
+      "name": "CODE | Build Single Container Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3376,
+        704
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.graph_url }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.payload) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "a9611952-ebf2-41f0-9d54-ba048b68a026",
+      "name": "HTTP | Graph Create Single Container",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3600,
+        704
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "CONFIGURE_META",
+          "name": "Meta Graph API Token Auth"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "var req = $('CODE | Verify Auth & Approval Gate').first().json;\nvar g = $('CODE | Authoritative Publish Eligibility Gate').first().json;\nvar inp = $input.first().json || {};\nvar state = (inp._childLoop && Array.isArray(inp._childLoop.assets)) ? inp._childLoop : { assets: g.assets, nextChildIdx: 0, childIds: [], dest_ig_user_id: g.dest_ig_user_id };\nvar idx = Number(state.nextChildIdx || 0);\nvar ast = state.assets[idx];\nvar isVid = String(ast.resource_type || '').toLowerCase() === 'video' || String(ast.media_type || '').toUpperCase() === 'VIDEO';\nvar payload = isVid ? { media_type: 'VIDEO', video_url: ast.secure_url, is_carousel_item: true } : { image_url: ast.secure_url, is_carousel_item: true };\nreturn [{ json: { graph_url: 'https://graph.facebook.com/' + encodeURIComponent(req.graph_ver) + '/' + encodeURIComponent(state.dest_ig_user_id) + '/media', payload: payload, child_asset_row_id: String(ast.id || ''), idx: idx, _childLoop: state } }];"
+      },
+      "id": "73d04825-48e4-4f5a-8831-d760dc32005c",
+      "name": "CODE | Build Carousel Child Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3376,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.graph_url }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.payload) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "ffb7956f-54a1-4747-91fb-67d5f4b5d591",
+      "name": "HTTP | Graph Create Carousel Child",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3600,
+        368
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "CONFIGURE_META",
+          "name": "Meta Graph API Token Auth"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "var prep = $('CODE | Build Carousel Child Request').last().json;\nvar state = Object.assign({}, prep._childLoop);\nvar childIds = Array.isArray(state.childIds) ? state.childIds.slice() : [];\nvar raw = $input.first().json || {};\nvar netErr = Boolean(raw.error && raw.statusCode === undefined);\nvar sc = raw.statusCode !== undefined ? Number(raw.statusCode) : (netErr ? 0 : 200);\nvar cBody = raw.body !== undefined ? raw.body : raw;\nif (typeof cBody === 'string') { try { cBody = JSON.parse(cBody); } catch (_) { cBody = {}; } }\ncBody = cBody || {};\n\nvar idx = Number(prep.idx || 0);\nif (netErr || sc >= 300 || cBody.error || !cBody.id) {\n  var msg = netErr ? String(raw.error.message || 'network error') : ((cBody.error && cBody.error.message) || ('Child ' + idx + ' creation failed (HTTP ' + sc + ')'));\n  return [{ json: { created: false, errCode: 'CAROUSEL_CHILD_FAILED', errStage: 'CREATING_CONTAINER', errMsg: msg, _childLoop: state } }];\n}\nvar childId = String(cBody.id);\nchildIds.push(childId);\nstate.childIds = childIds;\nstate.nextChildIdx = idx + 1;\nvar more = state.nextChildIdx < state.assets.length;\nreturn [{ json: { created: true, more: more, child_id: childId, child_asset_row_id: prep.child_asset_row_id, _childLoop: state } }];"
+      },
+      "id": "df972932-d6ad-4472-b566-87b0ebd3944b",
+      "name": "CODE | Inspect Child Container Outcome",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3824,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b766679f-912f-4479-b5c3-cae444b63556",
+              "leftValue": "={{ $json.created }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "4bca1cc9-1930-4112-9952-f112acbcc0fe",
+      "name": "IF | Child Container Created",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        4048,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/instaops_media_assets?id=eq.' + encodeURIComponent($json.child_asset_row_id || 'none') }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ ig_child_container_id: $json.child_id }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        }
+      },
+      "id": "cbd94b71-9178-42a2-a3d9-fbbe3257186a",
+      "name": "HTTP | Persist Child Container ID",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4256,
+        304
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "04b4e575-1d50-479e-868e-55b9ca96aad3",
+              "leftValue": "={{ $('CODE | Inspect Child Container Outcome').last().json.more }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "ea9c640e-85bb-42f5-8e4d-5ac999887b0c",
+      "name": "IF | More Carousel Children",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        4480,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { _childLoop: $('CODE | Inspect Child Container Outcome').last().json._childLoop } }];"
+      },
+      "id": "5bf28abc-3684-43e4-97f3-b0a5dcd83e5f",
+      "name": "CODE | Carry Child Loop State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3920,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/instaops_posts?id=eq.' + encodeURIComponent($('CODE | Verify Auth & Approval Gate').first().json.post_uuid) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ child_container_ids: $('CODE | Inspect Child Container Outcome').last().json._childLoop.childIds }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        }
+      },
+      "id": "aa803bee-1b58-414c-9e35-cd17eaeb9bc8",
+      "name": "HTTP | Save Child Container IDs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4704,
+        304
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/instaops_jobs?job_id=eq.' + encodeURIComponent($('CODE | Verify Auth & Approval Gate').first().json.job_id || 'none') }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ stage: 'POLLING_CHILDREN' }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        }
+      },
+      "id": "925145d6-4709-4cf3-a521-360dabde487d",
+      "name": "HTTP | Mark Job POLLING_CHILDREN",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4928,
+        304
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "var req = $('CODE | Verify Auth & Approval Gate').first().json;\nvar inp = $input.first().json || {};\nvar prevState = inp._childPollState || {};\nvar childLoop = $('CODE | Inspect Child Container Outcome').last().json._childLoop;\nvar assets = prevState.assets || childLoop.assets;\nvar childIds = prevState.childIds || childLoop.childIds;\nvar idx = Number(prevState.pollChildIdx || 0);\nwhile (idx < assets.length) {\n  var a = assets[idx];\n  var isVid = String(a.resource_type || '').toLowerCase() === 'video' || String(a.media_type || '').toUpperCase() === 'VIDEO';\n  if (isVid) {\n    return [{ json: { has_poll: true, target_child_id: String(childIds[idx]), poll_url: 'https://graph.facebook.com/' + encodeURIComponent(req.graph_ver) + '/' + encodeURIComponent(String(childIds[idx])) + '?fields=id,status_code,status', poll_attempt: 1, _childPollState: { assets: assets, childIds: childIds, pollChildIdx: idx } } }];\n  }\n  idx++;\n}\nreturn [{ json: { has_poll: false, _childPollState: { assets: assets, childIds: childIds, pollChildIdx: idx } } }];"
+      },
+      "id": "a396d817-dc46-4ec4-8413-74d373e3c7b0",
+      "name": "CODE | Find Next Child To Poll",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5136,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "0361deb2-1b45-49ef-a8eb-acf22c49ca61",
+              "leftValue": "={{ $json.has_poll }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "683657e1-b9a7-471e-b603-b75e1463f161",
+      "name": "IF | Has Video Child To Poll",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        5360,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.poll_url }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "cfaacc21-7db1-4940-bc80-0d5fe779867e",
+      "name": "HTTP | Graph Poll Child Container",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5600,
+        208
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "CONFIGURE_META",
+          "name": "Meta Graph API Token Auth"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "var req = $('CODE | Verify Auth & Approval Gate').first().json;\nvar maxPolls = Number(req.max_polls || 15);\nvar cur = $('CODE | Find Next Child To Poll').last().json;\nvar carry = $('CODE | Carry Child Poll State').all().length ? $('CODE | Carry Child Poll State').last().json : null;\nvar pollCtx = (carry && carry.poll_url === cur.poll_url && Number(carry.poll_attempt || 0) > Number(cur.poll_attempt || 0)) ? carry : cur;\nvar attempt = Number(pollCtx.poll_attempt || 1);\nvar raw = $input.first().json || {};\nvar netErr = Boolean(raw.error && raw.statusCode === undefined);\nvar sc = raw.statusCode !== undefined ? Number(raw.statusCode) : (netErr ? 0 : 200);\nvar b = raw.body !== undefined ? raw.body : raw;\nif (typeof b === 'string') { try { b = JSON.parse(b); } catch (_) { b = {}; } }\nb = b || {};\n\nif (netErr) return [{ json: { decision: 'UNCERTAIN', errStage: 'POLLING_CHILDREN', errMsg: 'Child poll timeout: ' + String(raw.error.message || ''), pollCtx: pollCtx } }];\nif (sc >= 500) {\n  if (attempt < maxPolls) return [{ json: { decision: 'WAIT_RETRY', next_attempt: attempt + 1, pollCtx: pollCtx } }];\n  return [{ json: { decision: 'UNCERTAIN', errStage: 'POLLING_CHILDREN', errMsg: 'Child Graph HTTP ' + sc, pollCtx: pollCtx } }];\n}\nif (sc >= 400 || b.error) {\n  return [{ json: { decision: 'CONFIRMED_FAIL', errCode: 'META_CONTAINER_ERROR', errStage: 'POLLING_CHILDREN', errMsg: (b.error && b.error.message) || ('Child status HTTP ' + sc), pollCtx: pollCtx } }];\n}\nvar code = String(b.status_code || b.status || '').toUpperCase();\nif (code === 'FINISHED' || code === 'PUBLISHED') {\n  var st = Object.assign({}, pollCtx._childPollState);\n  st.pollChildIdx = Number(st.pollChildIdx || 0) + 1;\n  return [{ json: { decision: 'NEXT_CHILD', _childPollState: st } }];\n}\nif (code === 'ERROR' || code === 'EXPIRED') {\n  return [{ json: { decision: 'CONFIRMED_FAIL', errCode: code === 'EXPIRED' ? 'META_CONTAINER_EXPIRED' : 'META_CONTAINER_ERROR', errStage: 'POLLING_CHILDREN', errMsg: 'Child container status_code=' + code, pollCtx: pollCtx } }];\n}\nif (attempt < maxPolls) return [{ json: { decision: 'WAIT_RETRY', next_attempt: attempt + 1, pollCtx: pollCtx } }];\nreturn [{ json: { decision: 'UNCERTAIN', errStage: 'POLLING_CHILDREN', errMsg: 'Child container exceeded max polls (' + maxPolls + ')', pollCtx: pollCtx } }];"
+      },
+      "id": "fc23b127-a1d8-4324-84d8-57bf4fa74b3c",
+      "name": "CODE | Evaluate Child Poll Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5824,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.decision }}",
+                    "rightValue": "WAIT_RETRY",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.decision }}",
+                    "rightValue": "NEXT_CHILD",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.decision }}",
+                    "rightValue": "CONFIRMED_FAIL",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.decision }}",
+                    "rightValue": "UNCERTAIN",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "2f0cdb4f-1249-436b-a3f7-23bb1f56b669",
+      "name": "SWITCH | Child Poll Decision",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        6048,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "amount": "={{ $('CODE | Verify Auth & Approval Gate').first().json.poll_interval_sec || 4 }}"
+      },
+      "id": "282d1f68-c1b9-496e-a415-ea702e0d28c7",
+      "name": "WAIT | Child Poll Backoff",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        6048,
+        0
+      ],
+      "webhookId": "ba165e99-73a9-4791-8bbb-f78933c68f26"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/rpc/instaops_renew_lock' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_lock_key: $('CODE | Verify Auth & Approval Gate').first().json.lock_key, p_owner_id: $('CODE | Verify Auth & Approval Gate').first().json.worker_owner, p_lease_seconds: 600 }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "e2647ad7-8dab-4cca-8f88-5e2079f7309b",
+      "name": "HTTP | Renew Publish Lock (Child Poll)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5824,
+        0
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "var ev = $('CODE | Evaluate Child Poll Status').last().json;\nreturn [{ json: { poll_url: ev.pollCtx.poll_url, target_child_id: ev.pollCtx.target_child_id, poll_attempt: ev.next_attempt, _childPollState: ev.pollCtx._childPollState } }];"
+      },
+      "id": "b995b372-e43f-44af-ac90-361b48ca12ac",
+      "name": "CODE | Carry Child Poll State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5600,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "var req = $('CODE | Verify Auth & Approval Gate').first().json;\nvar g = $('CODE | Authoritative Publish Eligibility Gate').first().json;\nvar childIds = ($input.first().json._childPollState || {}).childIds || [];\nreturn [{ json: { graph_url: 'https://graph.facebook.com/' + encodeURIComponent(req.graph_ver) + '/' + encodeURIComponent(g.dest_ig_user_id) + '/media', payload: { media_type: 'CAROUSEL', children: childIds.join(','), caption: g.caption }, childIds: childIds } }];"
+      },
+      "id": "41972b6d-bd03-4d33-81a9-34d6c7137143",
+      "name": "CODE | Build Carousel Parent Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5600,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.graph_url }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.payload) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "a6c6359b-dae7-4958-af9b-dc635f80f808",
+      "name": "HTTP | Graph Create Carousel Parent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5824,
+        384
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "CONFIGURE_META",
+          "name": "Meta Graph API Token Auth"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "var req = $('CODE | Verify Auth & Approval Gate').first().json;\nvar g = $('CODE | Authoritative Publish Eligibility Gate').first().json;\nvar childIds = g.is_carousel ? ($('CODE | Build Carousel Parent Request').last().json.childIds || []) : [];\nvar raw = $input.first().json || {};\nvar netErr = Boolean(raw.error && raw.statusCode === undefined);\nvar sc = raw.statusCode !== undefined ? Number(raw.statusCode) : (netErr ? 0 : 200);\nvar b = raw.body !== undefined ? raw.body : raw;\nif (typeof b === 'string') { try { b = JSON.parse(b); } catch (_) { b = {}; } }\nb = b || {};\nif (netErr || sc >= 300 || b.error || !b.id) {\n  return [{ json: { created: false, errCode: g.is_carousel ? 'CAROUSEL_PARENT_FAILED' : 'CONTAINER_CREATE_FAILED', errStage: 'CREATING_CONTAINER', errMsg: netErr ? String(raw.error.message || 'network error') : ((b.error && b.error.message) || ('Parent container error HTTP ' + sc)), childIds: childIds } }];\n}\nvar pid = String(b.id);\nreturn [{ json: { created: true, container_id: pid, childIds: childIds, poll_url: 'https://graph.facebook.com/' + encodeURIComponent(req.graph_ver) + '/' + encodeURIComponent(pid) + '?fields=id,status_code,status', poll_attempt: 1 } }];"
+      },
+      "id": "985fb487-77fe-48f6-9744-eb407e962c29",
+      "name": "CODE | Inspect Parent Container Create",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6064,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "4b5c27b1-14dd-4b2b-8ff9-7210d21f520b",
+              "leftValue": "={{ $json.created }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "de83eb8a-a789-496f-8615-9e78bc70b8c7",
+      "name": "IF | Parent Container Created",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        6288,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/instaops_posts?id=eq.' + encodeURIComponent($('CODE | Verify Auth & Approval Gate').first().json.post_uuid) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ container_id: $json.container_id, child_container_ids: $json.childIds }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        }
+      },
+      "id": "482f1eca-fb6e-4879-b42e-1068dda30600",
+      "name": "HTTP | Save Parent Container ID",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        6496,
+        480
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/instaops_jobs?job_id=eq.' + encodeURIComponent($('CODE | Verify Auth & Approval Gate').first().json.job_id || 'none') }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ stage: 'POLLING_CONTAINER' }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        }
+      },
+      "id": "e42de347-1470-4dcd-8d2d-10ecfb64fbd8",
+      "name": "HTTP | Mark Job POLLING_CONTAINER",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        6720,
+        480
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "var p = $('CODE | Inspect Parent Container Create').first().json;\nreturn [{ json: { container_id: p.container_id, childIds: p.childIds, poll_url: p.poll_url, poll_attempt: 1 } }];"
+      },
+      "id": "763c9168-e4ea-4972-b790-880712821a97",
+      "name": "CODE | Init Parent Poll State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6944,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.poll_url }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "cc7e64d6-d7f3-4387-876c-e9902649cf72",
+      "name": "HTTP | Graph Poll Parent Container",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7168,
+        480
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "CONFIGURE_META",
+          "name": "Meta Graph API Token Auth"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "var req = $('CODE | Verify Auth & Approval Gate').first().json;\nvar maxPolls = Number(req.max_polls || 15);\nvar initCtx = $('CODE | Init Parent Poll State').first().json;\nvar carry = $('CODE | Carry Parent Poll State').all().length ? $('CODE | Carry Parent Poll State').last().json : null;\nvar pollCtx = carry || initCtx;\nvar attempt = Number(pollCtx.poll_attempt || 1);\nvar raw = $input.first().json || {};\nvar netErr = Boolean(raw.error && raw.statusCode === undefined);\nvar sc = raw.statusCode !== undefined ? Number(raw.statusCode) : (netErr ? 0 : 200);\nvar b = raw.body !== undefined ? raw.body : raw;\nif (typeof b === 'string') { try { b = JSON.parse(b); } catch (_) { b = {}; } }\nb = b || {};\n\nif (netErr) return [{ json: { decision: 'UNCERTAIN', errStage: 'POLLING_CONTAINER', errMsg: 'Parent poll timeout: ' + String(raw.error.message || ''), container_id: pollCtx.container_id } }];\nif (sc >= 500) {\n  if (attempt < maxPolls) return [{ json: { decision: 'WAIT_RETRY', next_attempt: attempt + 1, pollCtx: pollCtx } }];\n  return [{ json: { decision: 'UNCERTAIN', errStage: 'POLLING_CONTAINER', errMsg: 'Parent Graph HTTP ' + sc, container_id: pollCtx.container_id } }];\n}\nif (sc >= 400 || b.error) {\n  return [{ json: { decision: 'CONFIRMED_FAIL', errCode: 'META_CONTAINER_ERROR', errStage: 'POLLING_CONTAINER', errMsg: (b.error && b.error.message) || ('Parent status HTTP ' + sc), container_id: pollCtx.container_id } }];\n}\nvar code = String(b.status_code || b.status || '').toUpperCase();\nif (code === 'PUBLISHED') {\n  return [{ json: { decision: 'UNCERTAIN', errStage: 'ALREADY_PUBLISHED_CONTAINER', errMsg: 'Container ' + pollCtx.container_id + ' already reports status_code=PUBLISHED; skipped duplicate media_publish.', container_id: pollCtx.container_id } }];\n}\nif (code === 'FINISHED') {\n  return [{ json: { decision: 'READY_TO_PUBLISH', container_id: pollCtx.container_id, childIds: pollCtx.childIds } }];\n}\nif (code === 'ERROR' || code === 'EXPIRED') {\n  return [{ json: { decision: 'CONFIRMED_FAIL', errCode: code === 'EXPIRED' ? 'META_CONTAINER_EXPIRED' : 'META_CONTAINER_ERROR', errStage: 'POLLING_CONTAINER', errMsg: 'Parent container status_code=' + code, container_id: pollCtx.container_id } }];\n}\nif (attempt < maxPolls) return [{ json: { decision: 'WAIT_RETRY', next_attempt: attempt + 1, pollCtx: pollCtx } }];\nreturn [{ json: { decision: 'UNCERTAIN', errStage: 'POLLING_CONTAINER', errMsg: 'Parent container exceeded max polls (' + maxPolls + ')', container_id: pollCtx.container_id } }];"
+      },
+      "id": "3a330b7c-8cca-4398-b4dd-8cd213ae3840",
+      "name": "CODE | Evaluate Parent Poll Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7376,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.decision }}",
+                    "rightValue": "READY_TO_PUBLISH",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.decision }}",
+                    "rightValue": "WAIT_RETRY",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.decision }}",
+                    "rightValue": "CONFIRMED_FAIL",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "786a68d5-51d3-4d62-905c-c21307cfc797",
+      "name": "SWITCH | Parent Poll Decision",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        7600,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "amount": "={{ $('CODE | Verify Auth & Approval Gate').first().json.poll_interval_sec || 4 }}"
+      },
+      "id": "ab240e7e-2229-48cb-aa34-bb4d915a3a5e",
+      "name": "WAIT | Parent Poll Backoff",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        7600,
+        256
+      ],
+      "webhookId": "cfad6c3b-bcb3-4af3-978b-bbfc9b46df1a"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/rpc/instaops_renew_lock' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_lock_key: $('CODE | Verify Auth & Approval Gate').first().json.lock_key, p_owner_id: $('CODE | Verify Auth & Approval Gate').first().json.worker_owner, p_lease_seconds: 600 }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "9d5a8970-4384-4ba5-891e-854df2d92bb3",
+      "name": "HTTP | Renew Publish Lock (Parent Poll)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7376,
+        256
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "var ev = $('CODE | Evaluate Parent Poll Status').last().json;\nreturn [{ json: { container_id: ev.pollCtx.container_id, childIds: ev.pollCtx.childIds, poll_url: ev.pollCtx.poll_url, poll_attempt: ev.next_attempt } }];"
+      },
+      "id": "aa9cd2e7-1cf8-425e-b7e7-fc6f43bb8a07",
+      "name": "CODE | Carry Parent Poll State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7168,
+        256
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/rpc/instaops_renew_lock' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_lock_key: $('CODE | Verify Auth & Approval Gate').first().json.lock_key, p_owner_id: $('CODE | Verify Auth & Approval Gate').first().json.worker_owner, p_lease_seconds: 600 }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "8e3ae3a7-c386-412e-bbd1-a3aeac1aea17",
+      "name": "HTTP | Renew Lock Before Publish",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7840,
+        400
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/instaops_jobs?job_id=eq.' + encodeURIComponent($('CODE | Verify Auth & Approval Gate').first().json.job_id || 'none') }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ stage: 'PUBLISHING_MEDIA' }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        }
+      },
+      "id": "a3968d10-b11a-4fc9-8cb6-d2d988464944",
+      "name": "HTTP | Mark Job PUBLISHING_MEDIA",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        8064,
+        400
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://graph.facebook.com/' + encodeURIComponent($('CODE | Verify Auth & Approval Gate').first().json.graph_ver) + '/' + encodeURIComponent($('CODE | Authoritative Publish Eligibility Gate').first().json.dest_ig_user_id) + '/media_publish' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ creation_id: $('CODE | Inspect Parent Container Create').first().json.container_id }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 35000
+        }
+      },
+      "id": "1334349d-8657-4acf-b89c-91b9528cb78e",
+      "name": "HTTP | Graph Publish Media",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        8288,
+        400
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "CONFIGURE_META",
+          "name": "Meta Graph API Token Auth"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "var contId = $('CODE | Inspect Parent Container Create').first().json.container_id;\nvar childIds = $('CODE | Inspect Parent Container Create').first().json.childIds || [];\nvar raw = $input.first().json || {};\nvar netErr = Boolean(raw.error && raw.statusCode === undefined);\nvar sc = raw.statusCode !== undefined ? Number(raw.statusCode) : (netErr ? 0 : 200);\nvar b = raw.body !== undefined ? raw.body : raw;\nif (typeof b === 'string') { try { b = JSON.parse(b); } catch (_) { b = {}; } }\nb = b || {};\n\nif (netErr || sc >= 500 || (sc >= 200 && sc < 300 && !/^\\d{8,}$/.test(String(b.id || '')))) {\n  return [{ json: { decision: 'UNCERTAIN', errStage: 'PUBLISHING_MEDIA', errMsg: netErr ? ('media_publish network/timeout error: ' + String(raw.error.message || '')) : ('media_publish ambiguous HTTP ' + sc), container_id: contId } }];\n}\nif (sc >= 400 || b.error || !b.id) {\n  return [{ json: { decision: 'CONFIRMED_FAIL', errCode: 'META_PUBLISH_FAILED', errStage: 'PUBLISHING_MEDIA', errMsg: (b.error && b.error.message) || ('media_publish rejected HTTP ' + sc), container_id: contId } }];\n}\nreturn [{ json: { decision: 'PUBLISHED', published_id: String(b.id), published_at: new Date().toISOString(), container_id: contId, childIds: childIds } }];"
+      },
+      "id": "79e69c89-f483-4ff8-aa11-69ecd4a561ad",
+      "name": "CODE | Classify Media Publish Outcome",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8496,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.decision }}",
+                    "rightValue": "PUBLISHED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.decision }}",
+                    "rightValue": "CONFIRMED_FAIL",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "b3a3b860-a8e8-4a2e-ba61-5db238aed883",
+      "name": "SWITCH | Media Publish Decision",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        8720,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/instaops_posts?id=eq.' + encodeURIComponent($('CODE | Verify Auth & Approval Gate').first().json.post_uuid) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ status: 'PUBLISHED', published_id: $json.published_id, published_at: $json.published_at, processed_at: $json.published_at, container_id: $json.container_id, child_container_ids: $json.childIds, error: '', error_code: '', error_stage: '', sheets_sync_status: 'PENDING' }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 20000
+        }
+      },
+      "id": "1989d9f4-81f8-40ad-9511-6cc1ea519958",
+      "name": "HTTP | Persist Published ID Immediately",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        8960,
+        304
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://graph.facebook.com/' + encodeURIComponent($('CODE | Verify Auth & Approval Gate').first().json.graph_ver) + '/' + encodeURIComponent($('CODE | Classify Media Publish Outcome').first().json.published_id) + '?fields=id,permalink' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "cdb2842c-ba99-4f32-b7e6-89d30a1febd7",
+      "name": "HTTP | Graph Fetch Permalink",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        9184,
+        304
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "CONFIGURE_META",
+          "name": "Meta Graph API Token Auth"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "var raw = $input.first().json || {};\nvar sc = raw.statusCode !== undefined ? Number(raw.statusCode) : (raw.error ? 0 : 200);\nvar b = raw.body !== undefined ? raw.body : raw;\nif (typeof b === 'string') { try { b = JSON.parse(b); } catch (_) { b = {}; } }\nvar hasPermalink = !raw.error && sc < 300 && b && b.permalink;\nreturn [{ json: { resolved: Boolean(hasPermalink), permalink: hasPermalink ? String(b.permalink) : '' } }];"
+      },
+      "id": "7bd86ab5-d042-431a-a02d-734fabda0cd5",
+      "name": "CODE | Evaluate Permalink Outcome",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9408,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "3757142b-e7cb-452c-89b2-d5fba262496f",
+              "leftValue": "={{ $json.resolved }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "1d46e4d1-d066-403a-8b1c-c29cff7b02c3",
+      "name": "IF | Permalink Resolved",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        9616,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/instaops_posts?id=eq.' + encodeURIComponent($('CODE | Verify Auth & Approval Gate').first().json.post_uuid) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ published_url: $json.permalink }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "a747b53e-6e55-4723-b425-f19e7ed29ea6",
+      "name": "HTTP | Save Published Permalink",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        9840,
+        224
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/instaops_audit_events' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ post_uuid: $('CODE | Verify Auth & Approval Gate').first().json.post_uuid, entity_type: 'POST', entity_id: $('CODE | Verify Auth & Approval Gate').first().json.post_id, action: 'PERMALINK_FETCH_SKIPPED', details: { published_id: $('CODE | Classify Media Publish Outcome').first().json.published_id } }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "607a69d7-3eb9-4782-9ef9-9c19966ce876",
+      "name": "HTTP | Audit Permalink Skipped",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        9840,
+        384
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "function safeSlug(v) { return String(v || '').replace(/[^A-Za-z0-9_-]+/g, '_').slice(0, 40); }\nvar req = $('CODE | Verify Auth & Approval Gate').first().json;\nvar g = $('CODE | Authoritative Publish Eligibility Gate').first().json;\nvar pub = $('CODE | Classify Media Publish Outcome').first().json;\nvar perm = $('CODE | Evaluate Permalink Outcome').first().json;\nvar saveRaw = $('HTTP | Persist Published ID Immediately').first().json || {};\nvar sb = saveRaw.body !== undefined ? saveRaw.body : saveRaw;\nvar savedRow = Array.isArray(sb) && sb[0] ? sb[0] : Object.assign({}, g.post, { status: 'PUBLISHED', published_id: pub.published_id, published_at: pub.published_at, container_id: pub.container_id, published_url: perm.permalink || '' });\nif (perm.permalink) savedRow.published_url = perm.permalink;\nvar nowIso = new Date().toISOString();\nvar logId = 'log_' + Date.now() + '_' + safeSlug(req.post_id);\nvar execLog = { log_id: logId, request_id: req.request_id, execution_id: req.execution_id, workflow_id: 'w02-publish', workflow_name: 'W02 Publish Content', post_id: req.post_id, operation: 'PUBLISH', trigger_source: 'DASHBOARD', stage: 'COMPLETED', status: 'SUCCESS', started_at: req.started_at, finished_at: nowIso, duration_ms: Math.max(0, Date.now() - Date.parse(req.started_at || nowIso)), retryable: false, created_at: nowIso };\nreturn [{ json: { post_sync: { entity_type: 'POST', entity_uuid: req.post_uuid, external_id: req.post_id, operation: 'UPSERT', payload: { post_uuid: req.post_uuid, row: savedRow }, source_revision: g.currentRev, idempotency_key: 'post:' + req.post_uuid + ':pub:' + Date.now(), status: 'PENDING' }, exec_log: execLog, log_sync: { entity_type: 'EXECUTION_LOG', entity_uuid: req.post_uuid, external_id: logId, operation: 'UPSERT', payload: execLog, source_revision: g.currentRev, idempotency_key: 'log:w02:' + req.post_uuid + ':' + Date.now(), status: 'PENDING' } } }];"
+      },
+      "id": "949cbe4e-005e-4aef-9de3-fbb75b60fc70",
+      "name": "CODE | Prepare Published Audit & Outbox",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10080,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/instaops_sync_queue' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.post_sync) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "4938e81d-2f92-4b87-abc5-f2c5d5907b6d",
+      "name": "HTTP | Enqueue Published Post Sync",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        10304,
+        304
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/instaops_execution_logs' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('CODE | Prepare Published Audit & Outbox').first().json.exec_log) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "63da8b5b-515d-4a3c-bf54-892038e1d350",
+      "name": "HTTP | Insert Publish Success Log",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        10480,
+        304
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/instaops_sync_queue' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('CODE | Prepare Published Audit & Outbox').first().json.log_sync) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "ba458277-064b-4f5d-8ff2-ef96ff6538bc",
+      "name": "HTTP | Enqueue Publish Log Sync",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        10624,
+        304
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/instaops_jobs?job_id=eq.' + encodeURIComponent($('CODE | Verify Auth & Approval Gate').first().json.job_id || 'none') }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ status: 'COMPLETED', stage: 'COMPLETED', finished_at: new Date().toISOString() }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        }
+      },
+      "id": "ce15e25a-491f-433f-913a-f68a3a763918",
+      "name": "HTTP | Complete Publish Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        10736,
+        304
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/rpc/instaops_release_lock' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_lock_key: $('CODE | Verify Auth & Approval Gate').first().json.lock_key, p_owner_id: $('CODE | Verify Auth & Approval Gate').first().json.worker_owner }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "8de25786-8ed3-4f86-887f-1e2e699f7071",
+      "name": "HTTP | Release Publish Lock (Success)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        10960,
+        304
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "function safeSlug(v) { return String(v || '').replace(/[^A-Za-z0-9_-]+/g, '_').slice(0, 40); }\nvar req = $('CODE | Verify Auth & Approval Gate').first().json;\nvar g = $('CODE | Authoritative Publish Eligibility Gate').first().json;\nvar inp = $input.first().json || {};\nvar errCode = String(inp.errCode || 'PUBLISH_FAILED');\nvar errStage = String(inp.errStage || 'FAILED');\nvar errMsg = String(inp.errMsg || 'Publish failed').slice(0, 500);\nvar nowIso = new Date().toISOString();\nvar savedRow = Object.assign({}, g.post, { status: 'FAILED', error: errMsg, error_code: errCode, error_stage: errStage });\nreturn [{\n  json: {\n    post_patch: { status: 'FAILED', error: errMsg, error_code: errCode, error_stage: errStage, sheets_sync_status: 'PENDING' },\n    job_patch: { status: 'FAILED', stage: errStage, execution_id: req.execution_id, error_code: errCode, error_message: errMsg, finished_at: nowIso },\n    sync_row: { entity_type: 'POST', entity_uuid: req.post_uuid, external_id: req.post_id, operation: 'UPSERT', payload: { post_uuid: req.post_uuid, row: savedRow }, source_revision: g.currentRev, idempotency_key: 'post:' + req.post_uuid + ':fail:' + Date.now(), status: 'PENDING' },\n    exec_log: { log_id: 'log_' + Date.now() + '_' + safeSlug(req.post_id), request_id: req.request_id, execution_id: req.execution_id, workflow_id: 'w02-publish', workflow_name: 'W02 Publish Content', post_id: req.post_id, operation: 'PUBLISH', trigger_source: 'DASHBOARD', stage: errStage, status: 'FAILED', started_at: req.started_at, finished_at: nowIso, duration_ms: Math.max(0, Date.now() - Date.parse(req.started_at || nowIso)), error_code: errCode, error_message: errMsg, retryable: true, created_at: nowIso }\n  }\n}];"
+      },
+      "id": "4b20f822-ec57-4fe0-84ca-d1ce60226eb6",
+      "name": "CODE | Init Confirmed Pre-Publish Fail",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6496,
+        768
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/instaops_posts?id=eq.' + encodeURIComponent($('CODE | Verify Auth & Approval Gate').first().json.post_uuid) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.post_patch) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "bcfd5df9-895b-412a-8ce7-8a9aefc88610",
+      "name": "HTTP | Save Post Failed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        6720,
+        768
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/instaops_sync_queue' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('CODE | Init Confirmed Pre-Publish Fail').first().json.sync_row) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "a0102597-e44f-483f-bf1d-56edaabe4c13",
+      "name": "HTTP | Enqueue Failed Post Sync",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        6944,
+        768
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/instaops_jobs?job_id=eq.' + encodeURIComponent($('CODE | Verify Auth & Approval Gate').first().json.job_id || 'none') }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('CODE | Init Confirmed Pre-Publish Fail').first().json.job_patch) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "ac284ffe-d8a8-43e7-beea-7fe77ea823e2",
+      "name": "HTTP | Mark Job Publish Failed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7168,
+        768
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/instaops_execution_logs' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('CODE | Init Confirmed Pre-Publish Fail').first().json.exec_log) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "de6b8484-af19-418d-94f3-b601fda8208d",
+      "name": "HTTP | Insert Publish Fail Log",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7376,
+        768
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/rpc/instaops_release_lock' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_lock_key: $('CODE | Verify Auth & Approval Gate').first().json.lock_key, p_owner_id: $('CODE | Verify Auth & Approval Gate').first().json.worker_owner }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "67c71d29-2ddb-4aa3-9610-515bb1ac6e98",
+      "name": "HTTP | Release Publish Lock (Clean Fail)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7600,
+        768
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// CRITICAL: Preserve canonical publish lock on uncertain outcome (VERIFY_MANUALLY + PUBLISH_OUTCOME_UNKNOWN).\nfunction safeSlug(v) { return String(v || '').replace(/[^A-Za-z0-9_-]+/g, '_').slice(0, 40); }\nvar req = $('CODE | Verify Auth & Approval Gate').first().json;\nvar g = $('CODE | Authoritative Publish Eligibility Gate').first().json;\nvar inp = $input.first().json || {};\nvar errStage = String(inp.errStage || 'PUBLISHING_MEDIA');\nvar errMsg = String(inp.errMsg || 'Publish outcome uncertain; verify manually on Instagram').slice(0, 500);\nvar nowIso = new Date().toISOString();\nvar savedRow = Object.assign({}, g.post, { status: 'VERIFY_MANUALLY', error: errMsg, error_code: 'PUBLISH_OUTCOME_UNKNOWN', error_stage: errStage });\nreturn [{\n  json: {\n    lock_preserved: true,\n    post_patch: Object.assign({ status: 'VERIFY_MANUALLY', error: errMsg, error_code: 'PUBLISH_OUTCOME_UNKNOWN', error_stage: errStage, sheets_sync_status: 'PENDING' }, inp.container_id ? { container_id: inp.container_id } : {}),\n    job_patch: { status: 'OUTCOME_UNKNOWN', stage: 'OUTCOME_UNKNOWN', execution_id: req.execution_id, error_code: 'PUBLISH_OUTCOME_UNKNOWN', error_message: errMsg },\n    sync_row: { entity_type: 'POST', entity_uuid: req.post_uuid, external_id: req.post_id, operation: 'UPSERT', payload: { post_uuid: req.post_uuid, row: savedRow }, source_revision: g.currentRev, idempotency_key: 'post:' + req.post_uuid + ':unk:' + Date.now(), status: 'PENDING' },\n    exec_log: { log_id: 'log_' + Date.now() + '_' + safeSlug(req.post_id), request_id: req.request_id, execution_id: req.execution_id, workflow_id: 'w02-publish', workflow_name: 'W02 Publish Content', post_id: req.post_id, operation: 'PUBLISH', trigger_source: 'DASHBOARD', stage: errStage, status: 'OUTCOME_UNKNOWN', started_at: req.started_at, finished_at: nowIso, duration_ms: Math.max(0, Date.now() - Date.parse(req.started_at || nowIso)), error_code: 'PUBLISH_OUTCOME_UNKNOWN', error_message: errMsg, retryable: false, created_at: nowIso }\n  }\n}];"
+      },
+      "id": "314c0bfe-2dc6-4d25-a997-17014db0d56a",
+      "name": "CODE | Init Uncertain Outcome",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8960,
+        576
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/instaops_posts?id=eq.' + encodeURIComponent($('CODE | Verify Auth & Approval Gate').first().json.post_uuid) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.post_patch) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "08d3affd-627e-43a2-86e7-45f76803e295",
+      "name": "HTTP | Save Post VERIFY_MANUALLY",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        9184,
+        576
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/instaops_jobs?job_id=eq.' + encodeURIComponent($('CODE | Verify Auth & Approval Gate').first().json.job_id || 'none') }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('CODE | Init Uncertain Outcome').first().json.job_patch) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "70d25170-3b79-484a-982d-f5f379c001da",
+      "name": "HTTP | Mark Job OUTCOME_UNKNOWN",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        9408,
+        576
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/instaops_sync_queue' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('CODE | Init Uncertain Outcome').first().json.sync_row) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "c7ef6250-04f4-489a-a02c-d4a2b4ebc660",
+      "name": "HTTP | Enqueue Uncertain Post Sync",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        9616,
+        576
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CODE | Verify Auth & Approval Gate').first().json.sb_url + '/rest/v1/instaops_execution_logs' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('CODE | Init Uncertain Outcome').first().json.exec_log) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "0e212a9c-aba8-42fa-b3d9-04ee98d43e8e",
+      "name": "HTTP | Insert Uncertain Publish Log",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        9840,
+        576
+      ],
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "7QtiSqfp0ZkTj6TQ",
+          "name": "Custom Auth account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "id": "7d77240b-43b2-4393-ad61-5f072b031d5b",
+      "name": "CHECK | Mark Post PUBLISHING",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2804,
+        419
+      ],
+      "parameters": {
+        "jsCode": "var raw=$input.first().json||{}; var sc=Number(raw.statusCode); var b=raw.body; if(raw.error||!Number.isFinite(sc)||sc<200||sc>=300) throw new Error('CRITICAL_HTTP_FAILED: HTTP | Mark Post PUBLISHING (HTTP '+sc+')'); if(typeof b==='string'){try{b=JSON.parse(b)}catch(_){b=null}}; if(!Array.isArray(b)||b.length!==1) throw new Error('DATABASE_WRITE_NOT_VERIFIED'); return $input.all();"
+      }
+    },
+    {
+      "id": "5a953abf-398a-470a-ab3c-a17d384db1fa",
+      "name": "CHECK | Mark Job CREATING_CONTAINER",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3028,
+        419
+      ],
+      "parameters": {
+        "jsCode": "var raw=$input.first().json||{}; var sc=Number(raw.statusCode); var b=raw.body; if(raw.error||!Number.isFinite(sc)||sc<200||sc>=300) throw new Error('CRITICAL_HTTP_FAILED: HTTP | Mark Job CREATING_CONTAINER (HTTP '+sc+')'); if(typeof b==='string'){try{b=JSON.parse(b)}catch(_){b=null}}; if(!Array.isArray(b)||b.length!==1) throw new Error('DATABASE_WRITE_NOT_VERIFIED'); return $input.all();"
+      }
+    },
+    {
+      "id": "0bb51daa-26b4-4677-ab90-b59805d330c9",
+      "name": "CHECK | Persist Child Container ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4356,
+        179
+      ],
+      "parameters": {
+        "jsCode": "var raw=$input.first().json||{}; var sc=Number(raw.statusCode); var b=raw.body; if(raw.error||!Number.isFinite(sc)||sc<200||sc>=300) throw new Error('CRITICAL_HTTP_FAILED: HTTP | Persist Child Container ID (HTTP '+sc+')'); if(typeof b==='string'){try{b=JSON.parse(b)}catch(_){b=null}}; if(!Array.isArray(b)||b.length!==1) throw new Error('DATABASE_WRITE_NOT_VERIFIED'); return $input.all();"
+      }
+    },
+    {
+      "id": "0cc890ab-26d6-49b6-8158-fd6affaa54c3",
+      "name": "CHECK | Save Child Container IDs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4804,
+        179
+      ],
+      "parameters": {
+        "jsCode": "var raw=$input.first().json||{}; var sc=Number(raw.statusCode); var b=raw.body; if(raw.error||!Number.isFinite(sc)||sc<200||sc>=300) throw new Error('CRITICAL_HTTP_FAILED: HTTP | Save Child Container IDs (HTTP '+sc+')'); if(typeof b==='string'){try{b=JSON.parse(b)}catch(_){b=null}}; if(!Array.isArray(b)||b.length!==1) throw new Error('DATABASE_WRITE_NOT_VERIFIED'); return $input.all();"
+      }
+    },
+    {
+      "id": "3e030218-32a4-44c3-8f47-dc2034dd0eed",
+      "name": "CHECK | Mark Job POLLING_CHILDREN",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5028,
+        179
+      ],
+      "parameters": {
+        "jsCode": "var raw=$input.first().json||{}; var sc=Number(raw.statusCode); var b=raw.body; if(raw.error||!Number.isFinite(sc)||sc<200||sc>=300) throw new Error('CRITICAL_HTTP_FAILED: HTTP | Mark Job POLLING_CHILDREN (HTTP '+sc+')'); if(typeof b==='string'){try{b=JSON.parse(b)}catch(_){b=null}}; if(!Array.isArray(b)||b.length!==1) throw new Error('DATABASE_WRITE_NOT_VERIFIED'); return $input.all();"
+      }
+    },
+    {
+      "id": "7940323c-8035-4654-a2cf-d0fc21623bac",
+      "name": "CHECK | Save Parent Container ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6596,
+        355
+      ],
+      "parameters": {
+        "jsCode": "var raw=$input.first().json||{}; var sc=Number(raw.statusCode); var b=raw.body; if(raw.error||!Number.isFinite(sc)||sc<200||sc>=300) throw new Error('CRITICAL_HTTP_FAILED: HTTP | Save Parent Container ID (HTTP '+sc+')'); if(typeof b==='string'){try{b=JSON.parse(b)}catch(_){b=null}}; if(!Array.isArray(b)||b.length!==1) throw new Error('DATABASE_WRITE_NOT_VERIFIED'); return $input.all();"
+      }
+    },
+    {
+      "id": "e5c1463a-2c2b-435b-9e0c-73674b500b1a",
+      "name": "CHECK | Mark Job POLLING_CONTAINER",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6820,
+        355
+      ],
+      "parameters": {
+        "jsCode": "var raw=$input.first().json||{}; var sc=Number(raw.statusCode); var b=raw.body; if(raw.error||!Number.isFinite(sc)||sc<200||sc>=300) throw new Error('CRITICAL_HTTP_FAILED: HTTP | Mark Job POLLING_CONTAINER (HTTP '+sc+')'); if(typeof b==='string'){try{b=JSON.parse(b)}catch(_){b=null}}; if(!Array.isArray(b)||b.length!==1) throw new Error('DATABASE_WRITE_NOT_VERIFIED'); return $input.all();"
+      }
+    },
+    {
+      "id": "81ca2374-a891-4db5-a9af-8e5d8893a35e",
+      "name": "CHECK | Mark Job PUBLISHING_MEDIA",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8164,
+        275
+      ],
+      "parameters": {
+        "jsCode": "var raw=$input.first().json||{}; var sc=Number(raw.statusCode); var b=raw.body; if(raw.error||!Number.isFinite(sc)||sc<200||sc>=300) throw new Error('CRITICAL_HTTP_FAILED: HTTP | Mark Job PUBLISHING_MEDIA (HTTP '+sc+')'); if(typeof b==='string'){try{b=JSON.parse(b)}catch(_){b=null}}; if(!Array.isArray(b)||b.length!==1) throw new Error('DATABASE_WRITE_NOT_VERIFIED'); return $input.all();"
+      }
+    },
+    {
+      "id": "11240ce6-3d0a-4232-81a2-90841c199bfe",
+      "name": "CHECK | Persist Published ID Immediately",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9060,
+        179
+      ],
+      "parameters": {
+        "jsCode": "var raw=$input.first().json||{}; var sc=Number(raw.statusCode); var b=raw.body; if(raw.error||!Number.isFinite(sc)||sc<200||sc>=300) throw new Error('CRITICAL_HTTP_FAILED: HTTP | Persist Published ID Immediately (HTTP '+sc+')'); if(typeof b==='string'){try{b=JSON.parse(b)}catch(_){b=null}}; if(!Array.isArray(b)||b.length!==1) throw new Error('DATABASE_WRITE_NOT_VERIFIED'); var expected=$('CODE | Classify Media Publish Outcome').first().json.published_id; if(!expected || String(b[0].published_id)!==String(expected) || b[0].status!=='PUBLISHED') throw new Error('PUBLISHED_ID_CHECKPOINT_UNVERIFIED: do not retry media_publish'); return $input.all();"
+      }
+    },
+    {
+      "id": "6ad4f731-447c-4509-9304-60abf2a677cb",
+      "name": "CHECK | Complete Publish Job",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10836,
+        179
+      ],
+      "parameters": {
+        "jsCode": "var raw=$input.first().json||{}; var sc=Number(raw.statusCode); var b=raw.body; if(raw.error||!Number.isFinite(sc)||sc<200||sc>=300) throw new Error('CRITICAL_HTTP_FAILED: HTTP | Complete Publish Job (HTTP '+sc+')'); if(typeof b==='string'){try{b=JSON.parse(b)}catch(_){b=null}}; if(!Array.isArray(b)||b.length!==1) throw new Error('DATABASE_WRITE_NOT_VERIFIED'); return $input.all();"
+      }
+    },
+    {
+      "id": "45957a3f-8a7d-43dd-b8bf-07917a6c1d2a",
+      "name": "CHECK | Renew Publish Lock (Child Poll)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5924,
+        -125
+      ],
+      "parameters": {
+        "jsCode": "var raw=$input.first().json||{}; var sc=Number(raw.statusCode); var b=raw.body; if(raw.error||!Number.isFinite(sc)||sc<200||sc>=300) throw new Error('CRITICAL_HTTP_FAILED: HTTP | Renew Publish Lock (Child Poll) (HTTP '+sc+')'); if(typeof b==='string'){try{b=JSON.parse(b)}catch(_){b=null}}; var r=Array.isArray(b)?b[0]:b; if(!r || r.renewed!==true) throw new Error('LOCK_RENEWAL_UNVERIFIED'); return $input.all();"
+      }
+    },
+    {
+      "id": "d44c55db-6e19-40ca-b774-9db544ec0688",
+      "name": "CHECK | Renew Publish Lock (Parent Poll)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7476,
+        131
+      ],
+      "parameters": {
+        "jsCode": "var raw=$input.first().json||{}; var sc=Number(raw.statusCode); var b=raw.body; if(raw.error||!Number.isFinite(sc)||sc<200||sc>=300) throw new Error('CRITICAL_HTTP_FAILED: HTTP | Renew Publish Lock (Parent Poll) (HTTP '+sc+')'); if(typeof b==='string'){try{b=JSON.parse(b)}catch(_){b=null}}; var r=Array.isArray(b)?b[0]:b; if(!r || r.renewed!==true) throw new Error('LOCK_RENEWAL_UNVERIFIED'); return $input.all();"
+      }
+    },
+    {
+      "id": "da077871-c8ac-40eb-9de1-088fc384d7a7",
+      "name": "CHECK | Renew Lock Before Publish",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7940,
+        275
+      ],
+      "parameters": {
+        "jsCode": "var raw=$input.first().json||{}; var sc=Number(raw.statusCode); var b=raw.body; if(raw.error||!Number.isFinite(sc)||sc<200||sc>=300) throw new Error('CRITICAL_HTTP_FAILED: HTTP | Renew Lock Before Publish (HTTP '+sc+')'); if(typeof b==='string'){try{b=JSON.parse(b)}catch(_){b=null}}; var r=Array.isArray(b)?b[0]:b; if(!r || r.renewed!==true) throw new Error('LOCK_RENEWAL_UNVERIFIED'); return $input.all();"
+      }
+    }
+  ],
+  "connections": {
+    "WEBHOOK | Publish Request": {
+      "main": [
+        [
+          {
+            "node": "CODE | Verify Auth & Approval Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Verify Auth & Approval Gate": {
+      "main": [
+        [
+          {
+            "node": "IF | Passed Request Guard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF | Passed Request Guard": {
+      "main": [
+        [
+          {
+            "node": "RESPOND | Accepted 202",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "RESPOND | Reject 4xx",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RESPOND | Accepted 202": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Transfer Publish Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Transfer Publish Lock": {
+      "main": [
+        [
+          {
+            "node": "CODE | Check Publish Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Check Publish Lock": {
+      "main": [
+        [
+          {
+            "node": "IF | Publish Lock Acquired",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF | Publish Lock Acquired": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Load Authoritative Post",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HTTP | Mark Job Publish Lock Conflict",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Load Authoritative Post": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Load Active MediaAssets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Load Active MediaAssets": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Load Destination Account",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Load Destination Account": {
+      "main": [
+        [
+          {
+            "node": "CODE | Authoritative Publish Eligibility Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Authoritative Publish Eligibility Gate": {
+      "main": [
+        [
+          {
+            "node": "IF | Passed Authoritative Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF | Passed Authoritative Gate": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Mark Post PUBLISHING",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HTTP | Mark Job Gate Rejected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Mark Job Gate Rejected": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Release Lock (Gate Rejected)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Mark Post PUBLISHING": {
+      "main": [
+        [
+          {
+            "node": "CHECK | Mark Post PUBLISHING",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Mark Job CREATING_CONTAINER": {
+      "main": [
+        [
+          {
+            "node": "CHECK | Mark Job CREATING_CONTAINER",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF | Is Carousel Post": {
+      "main": [
+        [
+          {
+            "node": "CODE | Build Carousel Child Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CODE | Build Single Container Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Build Single Container Request": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Graph Create Single Container",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Graph Create Single Container": {
+      "main": [
+        [
+          {
+            "node": "CODE | Inspect Parent Container Create",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Build Carousel Child Request": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Graph Create Carousel Child",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Graph Create Carousel Child": {
+      "main": [
+        [
+          {
+            "node": "CODE | Inspect Child Container Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Inspect Child Container Outcome": {
+      "main": [
+        [
+          {
+            "node": "IF | Child Container Created",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF | Child Container Created": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Persist Child Container ID",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CODE | Init Confirmed Pre-Publish Fail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Persist Child Container ID": {
+      "main": [
+        [
+          {
+            "node": "CHECK | Persist Child Container ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF | More Carousel Children": {
+      "main": [
+        [
+          {
+            "node": "CODE | Carry Child Loop State",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HTTP | Save Child Container IDs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Carry Child Loop State": {
+      "main": [
+        [
+          {
+            "node": "CODE | Build Carousel Child Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Save Child Container IDs": {
+      "main": [
+        [
+          {
+            "node": "CHECK | Save Child Container IDs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Mark Job POLLING_CHILDREN": {
+      "main": [
+        [
+          {
+            "node": "CHECK | Mark Job POLLING_CHILDREN",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Find Next Child To Poll": {
+      "main": [
+        [
+          {
+            "node": "IF | Has Video Child To Poll",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF | Has Video Child To Poll": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Graph Poll Child Container",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CODE | Build Carousel Parent Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Graph Poll Child Container": {
+      "main": [
+        [
+          {
+            "node": "CODE | Evaluate Child Poll Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Evaluate Child Poll Status": {
+      "main": [
+        [
+          {
+            "node": "SWITCH | Child Poll Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SWITCH | Child Poll Decision": {
+      "main": [
+        [
+          {
+            "node": "WAIT | Child Poll Backoff",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CODE | Find Next Child To Poll",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CODE | Init Confirmed Pre-Publish Fail",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CODE | Init Uncertain Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CODE | Init Uncertain Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WAIT | Child Poll Backoff": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Renew Publish Lock (Child Poll)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Renew Publish Lock (Child Poll)": {
+      "main": [
+        [
+          {
+            "node": "CHECK | Renew Publish Lock (Child Poll)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Carry Child Poll State": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Graph Poll Child Container",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Build Carousel Parent Request": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Graph Create Carousel Parent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Graph Create Carousel Parent": {
+      "main": [
+        [
+          {
+            "node": "CODE | Inspect Parent Container Create",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Inspect Parent Container Create": {
+      "main": [
+        [
+          {
+            "node": "IF | Parent Container Created",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF | Parent Container Created": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Save Parent Container ID",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CODE | Init Confirmed Pre-Publish Fail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Save Parent Container ID": {
+      "main": [
+        [
+          {
+            "node": "CHECK | Save Parent Container ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Mark Job POLLING_CONTAINER": {
+      "main": [
+        [
+          {
+            "node": "CHECK | Mark Job POLLING_CONTAINER",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Init Parent Poll State": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Graph Poll Parent Container",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Graph Poll Parent Container": {
+      "main": [
+        [
+          {
+            "node": "CODE | Evaluate Parent Poll Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Evaluate Parent Poll Status": {
+      "main": [
+        [
+          {
+            "node": "SWITCH | Parent Poll Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SWITCH | Parent Poll Decision": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Renew Lock Before Publish",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "WAIT | Parent Poll Backoff",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CODE | Init Confirmed Pre-Publish Fail",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CODE | Init Uncertain Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WAIT | Parent Poll Backoff": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Renew Publish Lock (Parent Poll)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Renew Publish Lock (Parent Poll)": {
+      "main": [
+        [
+          {
+            "node": "CHECK | Renew Publish Lock (Parent Poll)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Carry Parent Poll State": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Graph Poll Parent Container",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Renew Lock Before Publish": {
+      "main": [
+        [
+          {
+            "node": "CHECK | Renew Lock Before Publish",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Mark Job PUBLISHING_MEDIA": {
+      "main": [
+        [
+          {
+            "node": "CHECK | Mark Job PUBLISHING_MEDIA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Graph Publish Media": {
+      "main": [
+        [
+          {
+            "node": "CODE | Classify Media Publish Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Classify Media Publish Outcome": {
+      "main": [
+        [
+          {
+            "node": "SWITCH | Media Publish Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SWITCH | Media Publish Decision": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Persist Published ID Immediately",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CODE | Init Confirmed Pre-Publish Fail",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CODE | Init Uncertain Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Persist Published ID Immediately": {
+      "main": [
+        [
+          {
+            "node": "CHECK | Persist Published ID Immediately",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Graph Fetch Permalink": {
+      "main": [
+        [
+          {
+            "node": "CODE | Evaluate Permalink Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Evaluate Permalink Outcome": {
+      "main": [
+        [
+          {
+            "node": "IF | Permalink Resolved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF | Permalink Resolved": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Save Published Permalink",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HTTP | Audit Permalink Skipped",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Save Published Permalink": {
+      "main": [
+        [
+          {
+            "node": "CODE | Prepare Published Audit & Outbox",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Audit Permalink Skipped": {
+      "main": [
+        [
+          {
+            "node": "CODE | Prepare Published Audit & Outbox",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Prepare Published Audit & Outbox": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Enqueue Published Post Sync",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Enqueue Published Post Sync": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Insert Publish Success Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Insert Publish Success Log": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Enqueue Publish Log Sync",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Enqueue Publish Log Sync": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Complete Publish Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Complete Publish Job": {
+      "main": [
+        [
+          {
+            "node": "CHECK | Complete Publish Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Init Confirmed Pre-Publish Fail": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Save Post Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Save Post Failed": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Enqueue Failed Post Sync",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Enqueue Failed Post Sync": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Mark Job Publish Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Mark Job Publish Failed": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Insert Publish Fail Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Insert Publish Fail Log": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Release Publish Lock (Clean Fail)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CODE | Init Uncertain Outcome": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Save Post VERIFY_MANUALLY",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Save Post VERIFY_MANUALLY": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Mark Job OUTCOME_UNKNOWN",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Mark Job OUTCOME_UNKNOWN": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Enqueue Uncertain Post Sync",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP | Enqueue Uncertain Post Sync": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Insert Uncertain Publish Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CHECK | Mark Post PUBLISHING": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Mark Job CREATING_CONTAINER",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CHECK | Mark Job CREATING_CONTAINER": {
+      "main": [
+        [
+          {
+            "node": "IF | Is Carousel Post",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CHECK | Persist Child Container ID": {
+      "main": [
+        [
+          {
+            "node": "IF | More Carousel Children",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CHECK | Save Child Container IDs": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Mark Job POLLING_CHILDREN",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CHECK | Mark Job POLLING_CHILDREN": {
+      "main": [
+        [
+          {
+            "node": "CODE | Find Next Child To Poll",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CHECK | Save Parent Container ID": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Mark Job POLLING_CONTAINER",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CHECK | Mark Job POLLING_CONTAINER": {
+      "main": [
+        [
+          {
+            "node": "CODE | Init Parent Poll State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CHECK | Mark Job PUBLISHING_MEDIA": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Graph Publish Media",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CHECK | Persist Published ID Immediately": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Graph Fetch Permalink",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CHECK | Complete Publish Job": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Release Publish Lock (Success)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CHECK | Renew Publish Lock (Child Poll)": {
+      "main": [
+        [
+          {
+            "node": "CODE | Carry Child Poll State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CHECK | Renew Publish Lock (Parent Poll)": {
+      "main": [
+        [
+          {
+            "node": "CODE | Carry Parent Poll State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CHECK | Renew Lock Before Publish": {
+      "main": [
+        [
+          {
+            "node": "HTTP | Mark Job PUBLISHING_MEDIA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "name": "InstaOps v2 - W02 Integration Fix",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": true
+  }
+}
