@@ -1,0 +1,229 @@
+{
+  "name": "InstaOps v2 - W05 Recovery & Reconciliation (Supabase Primary)",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "nodes": [
+    {
+      "id": "w05-webhook",
+      "name": "WEBHOOK | Recovery Bridge",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [140, 280],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "instaops-recovery-v1",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "w05-validate",
+      "name": "CODE | Validate Recovery Operation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [360, 280],
+      "parameters": {
+        "jsCode": "// Safeguard marker: INSTAOPS_V2_RECOVERY — supports CHECK_CONNECTIONS, SAFE_RETRY, and VERIFY_PUBLICATION.\nconst item = $input.first().json || {};\nconst headers = item.headers || {};\nconst body = item.body || item;\nconst expected = String($env.N8N_WEBHOOK_SECRET || '');\nconst provided = String(headers['x-dashboard-secret'] || headers['X-Dashboard-Secret'] || '');\n\nfunction safeEqual(a, b) {\n  if (!a || a.length !== b.length) return false;\n  let diff = 0;\n  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);\n  return diff === 0;\n}\n\nconst action = String(body.action || '').trim().toUpperCase();\nlet error = '';\nif (!expected || !safeEqual(provided, expected)) {\n  error = 'Unauthorized webhook secret.';\n} else if (!['CHECK_CONNECTIONS', 'VERIFY_PUBLICATION', 'SAFE_RETRY'].includes(action)) {\n  error = `Invalid recovery action: ${action}`;\n}\n\nreturn [{\n  json: {\n    valid: !error,\n    error,\n    httpStatus: error.includes('Unauthorized') ? 403 : error ? 400 : 200,\n    action,\n    post_id: String(body.post_id || ''),\n    resolution: action === 'SAFE_RETRY' ? 'RESET_DRAFT' : String(body.resolution || 'CHECK_EXECUTION'),\n    published_id: String(body.published_id || ''),\n    published_url: String(body.published_url || '')\n  }\n}];"
+      }
+    },
+    {
+      "id": "w05-if-valid",
+      "name": "IF | Valid Recovery Auth",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [580, 280],
+      "parameters": { "conditions": { "boolean": [{ "value1": "={{ $json.valid }}", "value2": true }] } }
+    },
+    {
+      "id": "w05-respond-err",
+      "name": "RESPOND | Unauthorized",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [820, 420],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: false, error: $json.error }) }}",
+        "options": { "responseCode": "={{ $json.httpStatus || 403 }}" }
+      }
+    },
+    {
+      "id": "w05-if-check",
+      "name": "IF | Is CHECK_CONNECTIONS",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [820, 200],
+      "parameters": {
+        "conditions": { "string": [{ "value1": "={{ $json.action }}", "operation": "equals", "value2": "CHECK_CONNECTIONS" }] }
+      }
+    },
+    {
+      "id": "w05-check-supabase",
+      "name": "SUPABASE | Probe Accounts Table",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "continueOnFail": true,
+      "position": [1040, 80],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ ($env.SUPABASE_URL || 'https://cdgwdlhesgcxmswsamrj.supabase.co').replace(/\\/$/, '') + '/rest/v1/instaops_accounts?select=account_key&limit=1' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY || '' }}" },
+            { "name": "Authorization", "value": "={{ 'Bearer ' + ($env.SUPABASE_SERVICE_ROLE_KEY || '') }}" }
+          ]
+        },
+        "options": { "timeout": 10000 }
+      }
+    },
+    {
+      "id": "w05-check-sheets",
+      "name": "SHEETS | Probe Posts Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "continueOnFail": true,
+      "position": [1260, 80],
+      "credentials": { "googleSheetsOAuth2Api": { "id": "CONFIGURE_IN_N8N", "name": "Google Sheets OAuth2" } },
+      "parameters": {
+        "operation": "read",
+        "documentId": { "mode": "id", "value": "={{ $env.GOOGLE_SHEET_ID || '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs' }}" },
+        "sheetName": { "mode": "name", "value": "Posts" }
+      }
+    },
+    {
+      "id": "w05-check-cld",
+      "name": "HTTP | Probe Cloudinary API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "continueOnFail": true,
+      "position": [1480, 80],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://api.cloudinary.com/v1_1/' + ($env.CLOUDINARY_CLOUD_NAME || 'djkkknb9k') + '/usage' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "={{ 'Basic ' + Buffer.from(($env.CLOUDINARY_API_KEY || '') + ':' + ($env.CLOUDINARY_API_SECRET || '')).toString('base64') }}" }
+          ]
+        },
+        "options": { "timeout": 10000 }
+      }
+    },
+    {
+      "id": "w05-check-ig",
+      "name": "HTTP | Probe Instagram Business Account",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "continueOnFail": true,
+      "position": [1700, 80],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://graph.facebook.com/' + ($env.INSTAGRAM_GRAPH_VERSION || 'v22.0') + '/' + ($env.INSTAGRAM_USER_ID || '17841453414532595') + '?fields=id,username' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Authorization", "value": "={{ 'Bearer ' + ($env.META_GRAPH_TOKEN || '') }}" }]
+        },
+        "options": { "timeout": 10000 }
+      }
+    },
+    {
+      "id": "w05-summarize-health",
+      "name": "CODE | Build Service Health Matrix",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1920, 80],
+      "parameters": {
+        "jsCode": "const sb = $('SUPABASE | Probe Accounts Table').first()?.json || {};\nconst sheetItems = $('SHEETS | Probe Posts Sheet').all();\nconst sheetErr = sheetItems[0]?.json?.error;\nconst cld = $('HTTP | Probe Cloudinary API').first().json || {};\nconst ig = $input.first().json || {};\nreturn [{\n  json: {\n    ok: true,\n    services: {\n      supabase: { ok: !sb.error && !sb.message, detail: sb.error || sb.message || 'Supabase primary REST accessible' },\n      sheets: { ok: !sheetErr, detail: sheetErr ? String(sheetErr.message || sheetErr) : `Google Sheets reporting reachable (${sheetItems.length} rows)` },\n      cloudinary: { ok: !cld.error, detail: cld.error ? String(cld.error.message || cld.error) : `Plan ${cld.plan || 'Active'} (${cld.resources ?? 0} resources)` },\n      instagram: { ok: !ig.error && Boolean(ig.id), detail: ig.error ? String(ig.error.message || ig.error) : `Verified IG user @${ig.username || ig.id}` }\n    }\n  }\n}];"
+      }
+    },
+    {
+      "id": "w05-sb-reconcile-read",
+      "name": "SUPABASE | Read Post for Reconciliation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1040, 280],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ ($env.SUPABASE_URL || 'https://cdgwdlhesgcxmswsamrj.supabase.co').replace(/\\/$/, '') + '/rest/v1/instaops_posts?post_id=eq.' + encodeURIComponent($json.post_id) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY || '' }}" },
+            { "name": "Authorization", "value": "={{ 'Bearer ' + ($env.SUPABASE_SERVICE_ROLE_KEY || '') }}" }
+          ]
+        },
+        "options": { "timeout": 15000 }
+      }
+    },
+    {
+      "id": "w05-apply-reconcile",
+      "name": "CODE | Compute Reconciled Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1280, 280],
+      "parameters": {
+        "jsCode": "const req = $('CODE | Validate Recovery Operation').item.json;\nconst raw = $input.first().json;\nconst row = Array.isArray(raw) ? (raw[0] || {}) : (raw || {});\nconst now = new Date().toISOString();\nlet nextStatus = row.status || 'VERIFY_MANUALLY';\nlet clearError = false;\nif (req.resolution === 'MARK_PUBLISHED') {\n  nextStatus = 'PUBLISHED';\n  clearError = true;\n} else if (req.resolution === 'RESET_DRAFT' || req.resolution === 'MARK_READY') {\n  nextStatus = row.media_url ? 'READY' : 'DRAFT';\n  clearError = true;\n} else if (req.resolution === 'MARK_FAILED') {\n  nextStatus = 'FAILED';\n} else if (req.resolution === 'RELEASE_LOCK' && !row.published_id) {\n  nextStatus = row.media_url ? 'READY' : 'DRAFT';\n  clearError = true;\n}\nreturn [{\n  json: {\n    post_id: req.post_id,\n    patch: {\n      status: nextStatus,\n      published_id: req.published_id || row.published_id || '',\n      published_url: req.published_url || row.published_url || '',\n      published_at: nextStatus === 'PUBLISHED' ? (row.published_at || now) : row.published_at || null,\n      error: clearError ? '' : row.error || '',\n      error_code: clearError ? '' : row.error_code || '',\n      sheets_sync_status: 'PENDING'\n    }\n  }\n}];"
+      }
+    },
+    {
+      "id": "w05-sb-reconcile-write",
+      "name": "SUPABASE | Save Reconciled Post State",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1520, 280],
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ ($env.SUPABASE_URL || 'https://cdgwdlhesgcxmswsamrj.supabase.co').replace(/\\/$/, '') + '/rest/v1/instaops_posts?post_id=eq.' + encodeURIComponent($json.post_id) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY || '' }}" },
+            { "name": "Authorization", "value": "={{ 'Bearer ' + ($env.SUPABASE_SERVICE_ROLE_KEY || '') }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.patch) }}",
+        "options": { "timeout": 15000 }
+      }
+    },
+    {
+      "id": "w05-respond-ok",
+      "name": "RESPOND | Recovery Result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2140, 180],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json.services ? $json : { ok: true, post_id: $('CODE | Compute Reconciled Status').item.json.post_id, status: $('CODE | Compute Reconciled Status').item.json.patch.status }) }}",
+        "options": { "responseCode": 200 }
+      }
+    }
+  ],
+  "connections": {
+    "WEBHOOK | Recovery Bridge": { "main": [[{ "node": "CODE | Validate Recovery Operation", "type": "main", "index": 0 }]] },
+    "CODE | Validate Recovery Operation": { "main": [[{ "node": "IF | Valid Recovery Auth", "type": "main", "index": 0 }]] },
+    "IF | Valid Recovery Auth": {
+      "main": [
+        [{ "node": "IF | Is CHECK_CONNECTIONS", "type": "main", "index": 0 }],
+        [{ "node": "RESPOND | Unauthorized", "type": "main", "index": 0 }]
+      ]
+    },
+    "IF | Is CHECK_CONNECTIONS": {
+      "main": [
+        [{ "node": "SUPABASE | Probe Accounts Table", "type": "main", "index": 0 }],
+        [{ "node": "SUPABASE | Read Post for Reconciliation", "type": "main", "index": 0 }]
+      ]
+    },
+    "SUPABASE | Probe Accounts Table": { "main": [[{ "node": "SHEETS | Probe Posts Sheet", "type": "main", "index": 0 }]] },
+    "SHEETS | Probe Posts Sheet": { "main": [[{ "node": "HTTP | Probe Cloudinary API", "type": "main", "index": 0 }]] },
+    "HTTP | Probe Cloudinary API": { "main": [[{ "node": "HTTP | Probe Instagram Business Account", "type": "main", "index": 0 }]] },
+    "HTTP | Probe Instagram Business Account": { "main": [[{ "node": "CODE | Build Service Health Matrix", "type": "main", "index": 0 }]] },
+    "CODE | Build Service Health Matrix": { "main": [[{ "node": "RESPOND | Recovery Result", "type": "main", "index": 0 }]] },
+    "SUPABASE | Read Post for Reconciliation": { "main": [[{ "node": "CODE | Compute Reconciled Status", "type": "main", "index": 0 }]] },
+    "CODE | Compute Reconciled Status": { "main": [[{ "node": "SUPABASE | Save Reconciled Post State", "type": "main", "index": 0 }]] },
+    "SUPABASE | Save Reconciled Post State": { "main": [[{ "node": "RESPOND | Recovery Result", "type": "main", "index": 0 }]] }
+  }
+}

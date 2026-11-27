@@ -1,5 +1,12 @@
 node_modules/
 .next/
-.env.local
-.env
+.test-dist/
+.server-dist/
 .local-data/
+.backups/
+.env
+.env.local
+.env.*.local
+*.tsbuildinfo
+next-env.d.ts
+npm-debug.log*

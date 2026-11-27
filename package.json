@@ -1,22 +1,39 @@
 {
-  "name": "instagram-local-manager",
-  "version": "1.0.0",
+  "name": "instaops-v2-advanced",
+  "version": "2.0.0",
   "private": true,
-  "type": "module",
   "scripts": {
     "dev": "next dev --hostname 127.0.0.1",
     "build": "next build",
     "start": "next start --hostname 127.0.0.1",
-    "test": "node --test tests/*.test.mjs",
-    "test:v10": "node tests/v10-original.cjs",
-    "check:connection": "node --env-file=.env.local scripts/check-connection.mjs"
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint app components lib hooks types scripts tests",
+    "build:server": "tsc -p tsconfig.server.json",
+    "test": "tsc -p tsconfig.test.json && node --test .test-dist/tests/unit/*.test.js",
+    "test:integration": "tsc -p tsconfig.test.json && node --test .test-dist/tests/integration/*.test.js",
+    "check:config": "npm run build:server && node scripts/check-config.mjs",
+    "check:connection": "npm run build:server && node scripts/check-connection.mjs",
+    "check:workflows": "npm run build:server && node scripts/check-workflows.mjs",
+    "verify:supabase": "npm run build:server && node scripts/verify-schema.mjs",
+    "migrate:sheets": "npm run build:server && node scripts/migrate-sheets.mjs"
   },
   "engines": {
     "node": ">=20.9.0"
   },
   "dependencies": {
+    "@supabase/supabase-js": "2.49.1",
     "next": "^16.0.0",
+    "pg": "^8.13.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.11.10",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "eslint": "^9.18.0",
+    "eslint-config-next": "^16.0.0",
+    "typescript": "5.8.2"
   }
 }

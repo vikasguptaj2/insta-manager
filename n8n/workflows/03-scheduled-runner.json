@@ -1,0 +1,78 @@
+{
+  "name": "InstaOps v2 - W03 Scheduled Runner (Supabase Primary)",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "nodes": [
+    {
+      "id": "w03-cron",
+      "name": "SCHEDULE | Every 5 Minutes (Disabled By Default)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "disabled": true,
+      "position": [160, 260],
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "minutes", "minutesInterval": 5 }]
+        }
+      }
+    },
+    {
+      "id": "w03-sb-read-scheduled",
+      "name": "SUPABASE | Read Scheduled Due Queue",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [380, 260],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ ($env.SUPABASE_URL || 'https://cdgwdlhesgcxmswsamrj.supabase.co').replace(/\\/$/, '') + '/rest/v1/instaops_posts?status=eq.SCHEDULED&publish_mode=eq.LATER&deleted_at=is.null&select=*,instaops_media_assets(*)&order=publish_at.asc' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY || '' }}" },
+            { "name": "Authorization", "value": "={{ 'Bearer ' + ($env.SUPABASE_SERVICE_ROLE_KEY || '') }}" }
+          ]
+        },
+        "options": { "timeout": 15000 }
+      }
+    },
+    {
+      "id": "w03-filter-due",
+      "name": "CODE | Filter Due Approved Scheduled Posts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [600, 260],
+      "parameters": {
+        "jsCode": "// Safeguard marker: INSTAOPS_V2_SCHEDULE — reads due SCHEDULED + LATER rows (Reels/Images/Carousels) from Supabase.\nif (String($env.SCHEDULING_ENABLED || '').toLowerCase() !== 'true') {\n  return [];\n}\nconst now = Date.now();\nconst rows = $input.all().map(i => i.json || {});\nconst due = [];\n\nfor (const r of rows) {\n  const status = String(r.status || '').toUpperCase();\n  const mode = String(r.publish_mode || '').toUpperCase();\n  const mediaType = String(r.media_type || 'REEL').toUpperCase();\n  const pubMs = Date.parse(String(r.publish_at || ''));\n  if (status !== 'SCHEDULED' || mode !== 'LATER') continue;\n  if (!Number.isFinite(pubMs) || pubMs > now) continue;\n  if (!r.revision || Number(r.approved_revision) !== Number(r.revision)) continue;\n  const activeAssets = (Array.isArray(r.instaops_media_assets) ? r.instaops_media_assets : [])\n    .filter(a => a.storage_status === 'ACTIVE')\n    .sort((a, b) => Number(a.media_index || 0) - Number(b.media_index || 0));\n  if (mediaType === 'CAROUSEL' && (activeAssets.length < 2 || activeAssets.length > 10)) continue;\n  due.push({\n    json: {\n      action: 'PUBLISH',\n      post_uuid: String(r.id),\n      post_id: String(r.post_id),\n      ig_user_id: String(r.ig_user_id || $env.INSTAGRAM_USER_ID || '17841453414532595'),\n      media_type: mediaType,\n      caption: String(r.caption || r.original_caption || ''),\n      media_url: String(r.media_url || ''),\n      media_items: activeAssets,\n      reviewed_revision: String(r.revision),\n      confirm: true,\n      request_id: `sched_${r.post_id}_${Math.floor(now / 60000)}`,\n      job_id: `job_sched_${r.post_id}`\n    }\n  });\n}\n\nreturn due.slice(0, 1);"
+      }
+    },
+    {
+      "id": "w03-trigger-w02",
+      "name": "HTTP | Trigger W02 Publish Webhook",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [840, 260],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.N8N_BASE_URL || 'https://137.23.61.127.sslip.io').replace(/\\/$/, '') + '/webhook/instaops-publish-v1' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-dashboard-secret", "value": "={{ $env.N8N_WEBHOOK_SECRET || '' }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": { "timeout": 30000 }
+      }
+    }
+  ],
+  "connections": {
+    "SCHEDULE | Every 5 Minutes (Disabled By Default)": { "main": [[{ "node": "SUPABASE | Read Scheduled Due Queue", "type": "main", "index": 0 }]] },
+    "SUPABASE | Read Scheduled Due Queue": { "main": [[{ "node": "CODE | Filter Due Approved Scheduled Posts", "type": "main", "index": 0 }]] },
+    "CODE | Filter Due Approved Scheduled Posts": { "main": [[{ "node": "HTTP | Trigger W02 Publish Webhook", "type": "main", "index": 0 }]] }
+  }
+}

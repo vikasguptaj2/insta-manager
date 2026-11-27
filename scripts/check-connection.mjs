@@ -1,2 +1,15 @@
-import {overview} from '../lib/server.mjs';
-try{const r=await overview();console.log('Mode:',r.demo?'DEMO (no external calls)':'LIVE');console.log('Account:',r.account,'Timezone:',r.timezone);console.log('Sheet rows:',r.rows?.length??'Unavailable');console.log('Workflow:',r.workflow?.name??'Unavailable','Active:',r.workflow?.active??'Unknown');console.log('Two-step safeguards:',r.workflow?.twoStep?'Verified in API definition':'Missing or unverified');console.log('Schedule:',r.workflow?.schedule?.label??'Unknown');console.log('Execution records:',r.runs?.length??'Unavailable');if(Object.keys(r.errors).length){console.error(r.errors);process.exitCode=1;}else console.log('Read-only connectivity check successful. No posts published or changed.');}catch(e){console.error(e.message);process.exitCode=1}
+import { loadLocalEnv, loadServerModule } from './_env.mjs';
+
+loadLocalEnv('.env.local');
+const { getConnectionsHealth } = loadServerModule('lib/service.js');
+
+console.log('=== InstaOps v2.0 Service Connectivity Probe ===');
+const results = await getConnectionsHealth();
+for (const svc of results) {
+  const lat = svc.latencyMs !== undefined ? ` (${svc.latencyMs}ms)` : '';
+  console.log(`[${svc.status.toUpperCase().padEnd(12)}] ${svc.name}${lat} -> ${svc.detail}`);
+}
+
+if (results.some((r) => r.status === 'offline' && r.id !== 'ai')) {
+  process.exitCode = 1;
+}
