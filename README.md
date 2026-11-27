@@ -1,6 +1,6 @@
 # InstaOps v2.0 — Advanced Instagram Content Operations Platform
 
-A complete, safety-hardened Instagram content operations platform powered by **Supabase PostgreSQL (primary source of truth)**, **Google Sheets (synchronized reporting layer via transactional outbox queue)**, **Cloudinary (authoritative media storage)**, **online n8n (`https://137.23.61.127.sslip.io`)**, **Hosted Vercel Downloader (`https://instagram-downloader-psi-one.vercel.app`)**, and **Meta Graph API `v22.0`** supporting **Reels, Single Images, and complete multi-item / mixed Carousels (2–10 images & videos)**.
+A complete, safety-hardened Instagram content operations platform powered by **Supabase PostgreSQL (primary source of truth)**, **Google Sheets (synchronized reporting layer via transactional outbox queue)**, **Cloudinary (authoritative media storage)**, **online n8n (`https://137.23.61.127.sslip.io`)**, **Hosted Vercel Downloader (`https://ig-dowloader-nnnn.vercel.app`)**, and **Meta Graph API `v22.0`** supporting **Reels, Single Images, and complete multi-item / mixed Carousels (2–10 images & videos)**.
 
 ## Core Architectural Principles
 

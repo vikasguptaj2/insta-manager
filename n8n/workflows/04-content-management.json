@@ -10,7 +10,7 @@
       "name": "WEBHOOK | Content & Sync Bridge",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
-      "position": [140, 320],
+      "position": [100, 320],
       "parameters": {
         "httpMethod": "POST",
         "path": "instaops-content-v1",
@@ -23,9 +23,9 @@
       "name": "CODE | Validate Content & Sync Action",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [380, 320],
+      "position": [340, 320],
       "parameters": {
-        "jsCode": "// Safeguard marker: INSTAOPS_V2_CONTENT — permanent-ID Google Sheets outbox sync across Posts/MediaAssets/ExecutionLogs/Accounts and hardened Cloudinary destroy.\nfunction readCfg(key, fallback) {\n  var blocked = false;\n  try {\n    if (typeof $env !== 'undefined' && $env && $env[key] !== undefined && $env[key] !== null && $env[key] !== '') {\n      return { value: String($env[key]), source: 'env', blocked: false };\n    }\n  } catch (_) { blocked = true; }\n  try {\n    if (typeof $vars !== 'undefined' && $vars && $vars[key] !== undefined && $vars[key] !== null && $vars[key] !== '') {\n      return { value: String($vars[key]), source: 'vars', blocked: blocked };\n    }\n  } catch (_) {}\n  return { value: fallback || '', source: fallback ? 'default' : 'missing', blocked: blocked };\n}\n\nfunction safeEqual(a, b) {\n  if (!a || a.length !== b.length) return false;\n  var diff = 0;\n  for (var i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);\n  return diff === 0;\n}\n\nvar ALLOWLIST = [\n  'LIST_POSTS',\n  'LIST_MEDIA',\n  'CREATE_POST',\n  'UPDATE_POST',\n  'SCHEDULE_POST',\n  'CANCEL_SCHEDULE',\n  'ARCHIVE_POST',\n  'SYNC_RECORD',\n  'DELETE_MEDIA',\n  'DELETE_POST'\n];\n\nvar item = $input.first().json || {};\nvar headers = item.headers || {};\nvar body = item.body || item;\nvar secretCfg = readCfg('N8N_WEBHOOK_SECRET', '');\nvar sheetCfg = readCfg('GOOGLE_SHEET_ID', '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs');\nvar liveDelCfg = readCfg('LIVE_DELETE_ENABLED', 'false');\nvar expected = secretCfg.value;\nvar provided = String(headers['x-dashboard-secret'] || headers['X-Dashboard-Secret'] || '');\nvar action = String(body.action || '').trim().toUpperCase();\nvar liveDelEnabled = liveDelCfg.value.toLowerCase() === 'true';\n\nvar error = '';\nvar httpStatus = 200;\nif (secretCfg.blocked && !expected) {\n  error = 'n8n $env/secret access denied; configure N8N_BLOCK_ENV_ACCESS_IN_NODE=false or $vars.';\n  httpStatus = 500;\n} else if (!expected || !safeEqual(provided, expected)) {\n  error = 'Unauthorized webhook secret.';\n  httpStatus = 403;\n} else if (ALLOWLIST.indexOf(action) === -1) {\n  error = 'Unsupported action: ' + action;\n  httpStatus = 400;\n} else if (action === 'DELETE_MEDIA' || action === 'DELETE_POST') {\n  if (liveDelCfg.blocked && liveDelCfg.source === 'missing') {\n    error = 'n8n $env access denied for LIVE_DELETE_ENABLED flag.';\n    httpStatus = 500;\n  } else if (!liveDelEnabled) {\n    error = 'Live Cloudinary deletion blocked inside W04: LIVE_DELETE_ENABLED is not true.';\n    httpStatus = 409;\n  } else if (body.confirm !== true) {\n    error = 'Explicit confirm: true is required for destructive Cloudinary asset removal.';\n    httpStatus = 403;\n  }\n}\n\nreturn [{\n  json: {\n    valid: !error,\n    error: error,\n    httpStatus: httpStatus,\n    action: action,\n    body: body,\n    sheet_id: sheetCfg.value,\n    post_id: String(body.post_id || body.external_id || (body.row && body.row.post_id) || ''),\n    entity_uuid: String(body.entity_uuid || body.post_uuid || ''),\n    entity_type: String(body.entity_type || 'POST').toUpperCase(),\n    request_id: String(body.request_id || '')\n  }\n}];"
+        "jsCode": "// Safeguard marker: INSTAOPS_V2_CONTENT — permanent-ID Google Sheets outbox sync and lock-verified Cloudinary /destroy via standard HTTP Request nodes.\nfunction readCfg(key, fallback) {\n  var blocked = false;\n  try { if (typeof $vars !== 'undefined' && $vars && $vars[key] !== undefined && $vars[key] !== null && $vars[key] !== '') return { value: String($vars[key]), source: 'vars', blocked: false }; } catch (_) {}\n  try { if (typeof $env !== 'undefined' && $env && $env[key] !== undefined && $env[key] !== null && $env[key] !== '') return { value: String($env[key]), source: 'env', blocked: false }; } catch (_) { blocked = true; }\n  return { value: fallback || '', source: fallback ? 'default' : 'missing', blocked: blocked };\n}\nfunction safeEqual(a, b) {\n  if (!a || a.length !== b.length) return false;\n  var diff = 0;\n  for (var i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);\n  return diff === 0;\n}\n\nvar ALLOWLIST = [\n  'LIST_POSTS',\n  'LIST_MEDIA',\n  'CREATE_POST',\n  'UPDATE_POST',\n  'SCHEDULE_POST',\n  'CANCEL_SCHEDULE',\n  'ARCHIVE_POST',\n  'SYNC_RECORD',\n  'DELETE_MEDIA',\n  'DELETE_POST'\n];\n\nvar item = $input.first().json || {};\nvar headers = item.headers || {};\nvar body = item.body || item;\nvar secretCfg = readCfg('N8N_WEBHOOK_SECRET', '');\nvar sheetCfg = readCfg('GOOGLE_SHEET_ID', '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs');\nvar liveDelCfg = readCfg('LIVE_DELETE_ENABLED', 'false');\nvar expected = secretCfg.value;\nvar provided = String(headers['x-dashboard-secret'] || headers['X-Dashboard-Secret'] || '');\nvar action = String(body.action || '').trim().toUpperCase();\nvar liveDelEnabled = liveDelCfg.value.toLowerCase() === 'true';\n\nvar error = '';\nvar httpStatus = 200;\nif (secretCfg.blocked && !expected) {\n  error = 'n8n $env/secret access denied; configure N8N_BLOCK_ENV_ACCESS_IN_NODE=false or $vars.';\n  httpStatus = 500;\n} else if (!expected || !safeEqual(provided, expected)) {\n  error = 'Unauthorized webhook secret.';\n  httpStatus = 403;\n} else if (ALLOWLIST.indexOf(action) === -1) {\n  error = 'Unsupported action: ' + action;\n  httpStatus = 400;\n} else if (action === 'DELETE_MEDIA' || action === 'DELETE_POST') {\n  if (liveDelCfg.blocked && liveDelCfg.source === 'missing') {\n    error = 'n8n $env access denied for LIVE_DELETE_ENABLED flag.';\n    httpStatus = 500;\n  } else if (!liveDelEnabled) {\n    error = 'Live Cloudinary deletion blocked inside W04: LIVE_DELETE_ENABLED is not true.';\n    httpStatus = 409;\n  } else if (body.confirm !== true) {\n    error = 'Explicit confirm: true is required for destructive Cloudinary asset removal.';\n    httpStatus = 403;\n  }\n}\n\nvar execId = String((typeof $execution !== 'undefined' && $execution && $execution.id) || '');\nvar reqId = String(body.request_id || '');\nreturn [{\n  json: {\n    valid: !error,\n    error: error,\n    httpStatus: httpStatus,\n    action: action,\n    body: body,\n    sheet_id: sheetCfg.value,\n    sb_url: readCfg('SUPABASE_URL', 'https://cdgwdlhesgcxmswsamrj.supabase.co').value.replace(/\\/$/, ''),\n    cld_cloud: readCfg('CLOUDINARY_CLOUD_NAME', 'djkkknb9k').value,\n    live_delete_enabled: liveDelEnabled,\n    post_id: String(body.post_id || body.external_id || (body.row && body.row.post_id) || ''),\n    entity_uuid: String(body.entity_uuid || body.post_uuid || ''),\n    lock_key: String(body.lock_key || ''),\n    lock_owner: String(body.lock_owner || ''),\n    w04_owner: 'w04:' + (execId || reqId || Date.now()),\n    entity_type: String(body.entity_type || 'POST').toUpperCase(),\n    request_id: reqId,\n    execution_id: execId\n  }\n}];"
       }
     },
     {
@@ -33,19 +33,15 @@
       "name": "IF | Valid Content Request",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [620, 320],
-      "parameters": {
-        "conditions": {
-          "boolean": [{ "value1": "={{ $json.valid }}", "value2": true }]
-        }
-      }
+      "position": [560, 320],
+      "parameters": { "conditions": { "boolean": [{ "value1": "={{ $json.valid }}", "value2": true }] } }
     },
     {
       "id": "w04-respond-err",
       "name": "RESPOND | Auth/Validation Error",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [860, 520],
+      "position": [800, 540],
       "parameters": {
         "respondWith": "json",
         "responseBody": "={{ JSON.stringify({ ok: false, error: $json.error }) }}",
@@ -57,38 +53,14 @@
       "name": "SWITCH | Route Action",
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3.2,
-      "position": [860, 220],
+      "position": [800, 220],
       "parameters": {
         "rules": {
           "values": [
-            {
-              "outputKey": "LIST_POSTS",
-              "conditions": {
-                "options": { "caseSensitive": true, "typeValidation": "strict" },
-                "conditions": [{ "leftValue": "={{ $json.action }}", "rightValue": "LIST_POSTS", "operator": { "type": "string", "operation": "equals" } }]
-              }
-            },
-            {
-              "outputKey": "LIST_MEDIA",
-              "conditions": {
-                "options": { "caseSensitive": true, "typeValidation": "strict" },
-                "conditions": [{ "leftValue": "={{ $json.action }}", "rightValue": "LIST_MEDIA", "operator": { "type": "string", "operation": "equals" } }]
-              }
-            },
-            {
-              "outputKey": "SYNC_RECORD",
-              "conditions": {
-                "options": { "caseSensitive": true, "typeValidation": "strict" },
-                "conditions": [{ "leftValue": "={{ $json.action }}", "rightValue": "SYNC_RECORD", "operator": { "type": "string", "operation": "equals" } }]
-              }
-            },
-            {
-              "outputKey": "DELETE_GROUP",
-              "conditions": {
-                "options": { "caseSensitive": true, "typeValidation": "strict" },
-                "conditions": [{ "leftValue": "={{ $json.action }}", "rightValue": "DELETE_", "operator": { "type": "string", "operation": "startsWith" } }]
-              }
-            }
+            { "outputKey": "LIST_POSTS", "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $json.action }}", "rightValue": "LIST_POSTS", "operator": { "type": "string", "operation": "equals" } }] } },
+            { "outputKey": "LIST_MEDIA", "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $json.action }}", "rightValue": "LIST_MEDIA", "operator": { "type": "string", "operation": "equals" } }] } },
+            { "outputKey": "SYNC_RECORD", "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $json.action }}", "rightValue": "SYNC_RECORD", "operator": { "type": "string", "operation": "equals" } }] } },
+            { "outputKey": "DELETE_GROUP", "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $json.action }}", "rightValue": "DELETE_", "operator": { "type": "string", "operation": "startsWith" } }] } }
           ]
         },
         "options": { "fallbackOutput": "extra" }
@@ -101,11 +73,11 @@
       "typeVersion": 4.5,
       "alwaysOutputData": true,
       "continueOnFail": true,
-      "position": [1120, -20],
+      "position": [1060, -60],
       "credentials": { "googleSheetsOAuth2Api": { "id": "CONFIGURE_IN_N8N", "name": "Google Sheets OAuth2" } },
       "parameters": {
         "operation": "read",
-        "documentId": { "mode": "id", "value": "={{ $json.sheet_id || $vars.GOOGLE_SHEET_ID || '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs' }}" },
+        "documentId": { "mode": "id", "value": "={{ $('CODE | Validate Content & Sync Action').first().json.sheet_id || '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs' }}" },
         "sheetName": { "mode": "name", "value": "Posts" }
       }
     },
@@ -114,7 +86,7 @@
       "name": "CODE | Format List Posts",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1380, -20],
+      "position": [1320, -60],
       "parameters": {
         "jsCode": "var items = $input.all().map(function (i) { return i.json; }).filter(function (r) { return r && !r.error && (r.post_id || r.post_uuid); });\nreturn [{ json: { ok: true, rows: items, logs: [] } }];"
       }
@@ -126,22 +98,56 @@
       "typeVersion": 4.5,
       "alwaysOutputData": true,
       "continueOnFail": true,
-      "position": [1120, 100],
+      "position": [1060, 80],
       "credentials": { "googleSheetsOAuth2Api": { "id": "CONFIGURE_IN_N8N", "name": "Google Sheets OAuth2" } },
       "parameters": {
         "operation": "read",
-        "documentId": { "mode": "id", "value": "={{ $json.sheet_id || $vars.GOOGLE_SHEET_ID || '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs' }}" },
+        "documentId": { "mode": "id", "value": "={{ $('CODE | Validate Content & Sync Action').first().json.sheet_id || '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs' }}" },
         "sheetName": { "mode": "name", "value": "MediaAssets" }
       }
     },
     {
-      "id": "w04-fmt-media",
-      "name": "CODE | Format List Media & Cloudinary Usage",
+      "id": "w04-if-include-storage",
+      "name": "IF | Include Cloudinary Storage",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1300, 80],
+      "parameters": { "conditions": { "boolean": [{ "value1": "={{ Boolean($('CODE | Validate Content & Sync Action').first().json.body && $('CODE | Validate Content & Sync Action').first().json.body.includeStorage === true) }}", "value2": true }] } }
+    },
+    {
+      "id": "w04-http-cld-usage",
+      "name": "HTTP | Probe Cloudinary Usage",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "continueOnFail": true,
+      "position": [1540, 20],
+      "credentials": { "httpBasicAuth": { "id": "CONFIGURE_IN_N8N", "name": "Cloudinary API Key & Secret (Basic Auth)" } },
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://api.cloudinary.com/v1_1/' + encodeURIComponent($('CODE | Validate Content & Sync Action').first().json.cld_cloud) + '/usage' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "options": { "timeout": 10000, "response": { "response": { "fullResponse": true, "neverError": true } } }
+      }
+    },
+    {
+      "id": "w04-fmt-media-with-usage",
+      "name": "CODE | Format List Media With Storage",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1380, 100],
+      "position": [1780, 20],
       "parameters": {
-        "jsCode": "return (async function () {\n  var self = this;\n  function readCfg(key, fallback) {\n    try { if (typeof $env !== 'undefined' && $env && $env[key]) return String($env[key]); } catch (_) {}\n    try { if (typeof $vars !== 'undefined' && $vars && $vars[key]) return String($vars[key]); } catch (_) {}\n    return fallback || '';\n  }\n  var req = $('CODE | Validate Content & Sync Action').item.json;\n  var items = $input.all().map(function (i) { return i.json; }).filter(function (r) { return r && !r.error && (r.internal_asset_id || r.asset_uuid); });\n  var storage = null;\n  if (req.body && req.body.includeStorage === true) {\n    var cloudName = readCfg('CLOUDINARY_CLOUD_NAME', 'djkkknb9k');\n    var apiKey = readCfg('CLOUDINARY_API_KEY', '');\n    var apiSecret = readCfg('CLOUDINARY_API_SECRET', '');\n    if (cloudName && apiKey && apiSecret && ((self && self.helpers && self.helpers.httpRequest) || typeof fetch === 'function')) {\n      try {\n        var auth = 'Basic ' + Buffer.from(apiKey + ':' + apiSecret).toString('base64');\n        var uRes = self && self.helpers && self.helpers.httpRequest\n          ? await self.helpers.httpRequest({ method: 'GET', url: 'https://api.cloudinary.com/v1_1/' + encodeURIComponent(cloudName) + '/usage', headers: { Authorization: auth }, json: true, returnFullResponse: true, ignoreHttpStatusErrors: true, timeout: 8000 })\n          : await (async function () {\n              var r = await fetch('https://api.cloudinary.com/v1_1/' + encodeURIComponent(cloudName) + '/usage', { headers: { Authorization: auth } });\n              return { statusCode: r.status, body: await r.json() };\n            })();\n        var ub = uRes.body || {};\n        if (uRes.statusCode < 300 && !ub.error) {\n          storage = {\n            storageBytesUsed: ub.storage && ub.storage.usage !== undefined ? Number(ub.storage.usage) : null,\n            bandwidthBytesUsed: ub.bandwidth && ub.bandwidth.usage !== undefined ? Number(ub.bandwidth.usage) : null,\n            creditsUsagePercent: ub.credits && ub.credits.used_percent !== undefined ? Number(ub.credits.used_percent) : null,\n            resourcesCount: ub.resources !== undefined ? Number(ub.resources) : null,\n            plan: ub.plan ? String(ub.plan) : null\n          };\n        }\n      } catch (_) {}\n    }\n  }\n  return [{ json: { ok: true, assets: items, storage: storage } }];\n}).call(this);"
+        "jsCode": "var assets = $('SHEETS | Read MediaAssets Tab').all().map(function (i) { return i.json; }).filter(function (r) { return r && !r.error && (r.internal_asset_id || r.asset_uuid); });\nvar raw = $input.first().json || {};\nvar sc = raw.statusCode !== undefined ? Number(raw.statusCode) : (raw.error ? 0 : 200);\nvar ub = raw.body !== undefined ? raw.body : raw;\nvar storage = null;\nif (!raw.error && sc < 300 && ub && !ub.error) {\n  storage = {\n    storageBytesUsed: ub.storage && ub.storage.usage !== undefined ? Number(ub.storage.usage) : null,\n    bandwidthBytesUsed: ub.bandwidth && ub.bandwidth.usage !== undefined ? Number(ub.bandwidth.usage) : null,\n    creditsUsagePercent: ub.credits && ub.credits.used_percent !== undefined ? Number(ub.credits.used_percent) : null,\n    resourcesCount: ub.resources !== undefined ? Number(ub.resources) : null,\n    plan: ub.plan ? String(ub.plan) : null\n  };\n}\nreturn [{ json: { ok: true, assets: assets, storage: storage } }];"
+      }
+    },
+    {
+      "id": "w04-fmt-media-only",
+      "name": "CODE | Format List Media Only",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1540, 140],
+      "parameters": {
+        "jsCode": "var assets = $('SHEETS | Read MediaAssets Tab').all().map(function (i) { return i.json; }).filter(function (r) { return r && !r.error && (r.internal_asset_id || r.asset_uuid); });\nreturn [{ json: { ok: true, assets: assets, storage: null } }];"
       }
     },
     {
@@ -149,9 +155,9 @@
       "name": "CODE | Prepare Outbox Sheet Sync",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1120, 260],
+      "position": [1060, 260],
       "parameters": {
-        "jsCode": "var req = $('CODE | Validate Content & Sync Action').item.json;\nvar b = req.body || {};\nvar p = b.payload || {};\nvar row = Object.assign({}, p.row || p.record || p || {});\nvar et = String(b.entity_type || req.entity_type || 'POST').toUpperCase();\nvar nowIso = new Date().toISOString();\n\nfunction sanitizeCell(v) {\n  if (typeof v !== 'string') return v;\n  return /^[=+\\-@]/.test(v) ? \"'\" + v : v;\n}\n\nif (et === 'POST') {\n  var outPost = Object.assign({}, row, {\n    post_uuid: String(row.post_uuid || row.id || p.post_uuid || req.entity_uuid || ''),\n    post_id: String(row.post_id || b.external_id || req.post_id || ''),\n    original_caption: sanitizeCell(String(row.original_caption || '')),\n    caption: sanitizeCell(String(row.caption || '')),\n    hashtags_json: typeof row.hashtags_json === 'string' ? row.hashtags_json : JSON.stringify(Array.isArray(row.hashtags) ? row.hashtags : []),\n    mentions_json: typeof row.mentions_json === 'string' ? row.mentions_json : JSON.stringify(Array.isArray(row.mentions) ? row.mentions : []),\n    source_metadata_json: typeof row.source_metadata_json === 'string' ? row.source_metadata_json : JSON.stringify(row.source_metadata && typeof row.source_metadata === 'object' ? row.source_metadata : {}),\n    child_container_ids: typeof row.child_container_ids === 'string' ? row.child_container_ids : JSON.stringify(Array.isArray(row.child_container_ids) ? row.child_container_ids : []),\n    sheets_sync_status: 'SYNCED',\n    sheets_synced_at: nowIso\n  });\n  delete outPost.id;\n  delete outPost.hashtags;\n  delete outPost.mentions;\n  delete outPost.source_metadata;\n  return [{ json: outPost }];\n}\n\nif (et === 'MEDIA_ASSET') {\n  var outAsset = Object.assign({}, row, {\n    asset_uuid: String(row.asset_uuid || row.id || p.asset_uuid || req.entity_uuid || ''),\n    post_uuid: String(row.post_uuid || p.post_uuid || ''),\n    internal_asset_id: String(row.internal_asset_id || b.external_id || ''),\n    post_id: String(row.post_id || req.post_id || ''),\n    ig_child_container_id: String(row.ig_child_container_id || '')\n  });\n  delete outAsset.id;\n  return [{ json: outAsset }];\n}\n\nif (et === 'EXECUTION_LOG') {\n  return [{\n    json: {\n      log_id: String(row.log_id || b.external_id || req.entity_uuid || ('log_' + Date.now())),\n      request_id: String(row.request_id || ''),\n      execution_id: String(row.execution_id || ''),\n      workflow_id: String(row.workflow_id || ''),\n      workflow_name: String(row.workflow_name || ''),\n      post_id: String(row.post_id || ''),\n      operation: String(row.operation || ''),\n      trigger_source: String(row.trigger_source || 'DASHBOARD'),\n      stage: String(row.stage || ''),\n      status: String(row.status || ''),\n      started_at: String(row.started_at || nowIso),\n      finished_at: String(row.finished_at || nowIso),\n      duration_ms: Number(row.duration_ms || 0),\n      error_code: String(row.error_code || ''),\n      error_message: sanitizeCell(String(row.error_message || '')),\n      retryable: Boolean(row.retryable),\n      created_at: String(row.created_at || nowIso)\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    account_key: String(row.account_key || b.external_id || 'A'),\n    account_label: String(row.account_label || ''),\n    ig_user_id: String(row.ig_user_id || req.entity_uuid || ''),\n    enabled: row.enabled !== false,\n    created_at: String(row.created_at || nowIso),\n    updated_at: String(row.updated_at || nowIso)\n  }\n}];"
+        "jsCode": "var req = $('CODE | Validate Content & Sync Action').first().json;\nvar b = req.body || {};\nvar p = b.payload || {};\nvar row = Object.assign({}, p.row || p.record || p || {});\nvar et = String(b.entity_type || req.entity_type || 'POST').toUpperCase();\nvar nowIso = new Date().toISOString();\nfunction sanitizeCell(v) { return typeof v !== 'string' ? v : (/^[=+\\-@]/.test(v) ? \"'\" + v : v); }\n\nif (et === 'POST') {\n  var outPost = Object.assign({}, row, {\n    post_uuid: String(row.post_uuid || row.id || p.post_uuid || req.entity_uuid || ''),\n    post_id: String(row.post_id || b.external_id || req.post_id || ''),\n    original_caption: sanitizeCell(String(row.original_caption || '')),\n    caption: sanitizeCell(String(row.caption || '')),\n    hashtags_json: typeof row.hashtags_json === 'string' ? row.hashtags_json : JSON.stringify(Array.isArray(row.hashtags) ? row.hashtags : []),\n    mentions_json: typeof row.mentions_json === 'string' ? row.mentions_json : JSON.stringify(Array.isArray(row.mentions) ? row.mentions : []),\n    source_metadata_json: typeof row.source_metadata_json === 'string' ? row.source_metadata_json : JSON.stringify(row.source_metadata && typeof row.source_metadata === 'object' ? row.source_metadata : {}),\n    child_container_ids: typeof row.child_container_ids === 'string' ? row.child_container_ids : JSON.stringify(Array.isArray(row.child_container_ids) ? row.child_container_ids : []),\n    sheets_sync_status: 'SYNCED',\n    sheets_synced_at: nowIso\n  });\n  delete outPost.id; delete outPost.hashtags; delete outPost.mentions; delete outPost.source_metadata;\n  return [{ json: outPost }];\n}\nif (et === 'MEDIA_ASSET') {\n  var outAsset = Object.assign({}, row, {\n    asset_uuid: String(row.asset_uuid || row.id || p.asset_uuid || req.entity_uuid || ''),\n    post_uuid: String(row.post_uuid || p.post_uuid || ''),\n    internal_asset_id: String(row.internal_asset_id || b.external_id || ''),\n    post_id: String(row.post_id || req.post_id || ''),\n    ig_child_container_id: String(row.ig_child_container_id || '')\n  });\n  delete outAsset.id;\n  return [{ json: outAsset }];\n}\nif (et === 'EXECUTION_LOG') {\n  return [{ json: { log_id: String(row.log_id || b.external_id || req.entity_uuid || ('log_' + Date.now())), request_id: String(row.request_id || ''), execution_id: String(row.execution_id || ''), workflow_id: String(row.workflow_id || ''), workflow_name: String(row.workflow_name || ''), post_id: String(row.post_id || ''), operation: String(row.operation || ''), trigger_source: String(row.trigger_source || 'DASHBOARD'), stage: String(row.stage || ''), status: String(row.status || ''), started_at: String(row.started_at || nowIso), finished_at: String(row.finished_at || nowIso), duration_ms: Number(row.duration_ms || 0), error_code: String(row.error_code || ''), error_message: sanitizeCell(String(row.error_message || '')), retryable: Boolean(row.retryable), created_at: String(row.created_at || nowIso) } }];\n}\nreturn [{ json: { account_key: String(row.account_key || b.external_id || 'A'), account_label: String(row.account_label || ''), ig_user_id: String(row.ig_user_id || req.entity_uuid || ''), enabled: row.enabled !== false, created_at: String(row.created_at || nowIso), updated_at: String(row.updated_at || nowIso) } }];"
       }
     },
     {
@@ -159,38 +165,14 @@
       "name": "SWITCH | Route Outbox Entity Tab",
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3.2,
-      "position": [1340, 260],
+      "position": [1280, 260],
       "parameters": {
         "rules": {
           "values": [
-            {
-              "outputKey": "POST",
-              "conditions": {
-                "options": { "caseSensitive": true, "typeValidation": "strict" },
-                "conditions": [{ "leftValue": "={{ $('CODE | Validate Content & Sync Action').item.json.entity_type }}", "rightValue": "POST", "operator": { "type": "string", "operation": "equals" } }]
-              }
-            },
-            {
-              "outputKey": "MEDIA_ASSET",
-              "conditions": {
-                "options": { "caseSensitive": true, "typeValidation": "strict" },
-                "conditions": [{ "leftValue": "={{ $('CODE | Validate Content & Sync Action').item.json.entity_type }}", "rightValue": "MEDIA_ASSET", "operator": { "type": "string", "operation": "equals" } }]
-              }
-            },
-            {
-              "outputKey": "EXECUTION_LOG",
-              "conditions": {
-                "options": { "caseSensitive": true, "typeValidation": "strict" },
-                "conditions": [{ "leftValue": "={{ $('CODE | Validate Content & Sync Action').item.json.entity_type }}", "rightValue": "EXECUTION_LOG", "operator": { "type": "string", "operation": "equals" } }]
-              }
-            },
-            {
-              "outputKey": "ACCOUNT",
-              "conditions": {
-                "options": { "caseSensitive": true, "typeValidation": "strict" },
-                "conditions": [{ "leftValue": "={{ $('CODE | Validate Content & Sync Action').item.json.entity_type }}", "rightValue": "ACCOUNT", "operator": { "type": "string", "operation": "equals" } }]
-              }
-            }
+            { "outputKey": "POST", "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $('CODE | Validate Content & Sync Action').first().json.entity_type }}", "rightValue": "POST", "operator": { "type": "string", "operation": "equals" } }] } },
+            { "outputKey": "MEDIA_ASSET", "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $('CODE | Validate Content & Sync Action').first().json.entity_type }}", "rightValue": "MEDIA_ASSET", "operator": { "type": "string", "operation": "equals" } }] } },
+            { "outputKey": "EXECUTION_LOG", "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $('CODE | Validate Content & Sync Action').first().json.entity_type }}", "rightValue": "EXECUTION_LOG", "operator": { "type": "string", "operation": "equals" } }] } },
+            { "outputKey": "ACCOUNT", "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $('CODE | Validate Content & Sync Action').first().json.entity_type }}", "rightValue": "ACCOUNT", "operator": { "type": "string", "operation": "equals" } }] } }
           ]
         },
         "options": { "fallbackOutput": "extra" }
@@ -203,11 +185,11 @@
       "typeVersion": 4.5,
       "alwaysOutputData": true,
       "continueOnFail": true,
-      "position": [1580, 140],
+      "position": [1540, 200],
       "credentials": { "googleSheetsOAuth2Api": { "id": "CONFIGURE_IN_N8N", "name": "Google Sheets OAuth2" } },
       "parameters": {
         "operation": "appendOrUpdate",
-        "documentId": { "mode": "id", "value": "={{ $('CODE | Validate Content & Sync Action').item.json.sheet_id || '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs' }}" },
+        "documentId": { "mode": "id", "value": "={{ $('CODE | Validate Content & Sync Action').first().json.sheet_id || '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs' }}" },
         "sheetName": { "mode": "name", "value": "Posts" },
         "columns": { "mappingMode": "autoMapInputData", "matchingColumns": ["post_uuid"] }
       }
@@ -219,11 +201,11 @@
       "typeVersion": 4.5,
       "alwaysOutputData": true,
       "continueOnFail": true,
-      "position": [1580, 240],
+      "position": [1540, 300],
       "credentials": { "googleSheetsOAuth2Api": { "id": "CONFIGURE_IN_N8N", "name": "Google Sheets OAuth2" } },
       "parameters": {
         "operation": "appendOrUpdate",
-        "documentId": { "mode": "id", "value": "={{ $('CODE | Validate Content & Sync Action').item.json.sheet_id || '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs' }}" },
+        "documentId": { "mode": "id", "value": "={{ $('CODE | Validate Content & Sync Action').first().json.sheet_id || '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs' }}" },
         "sheetName": { "mode": "name", "value": "MediaAssets" },
         "columns": { "mappingMode": "autoMapInputData", "matchingColumns": ["asset_uuid"] }
       }
@@ -235,11 +217,11 @@
       "typeVersion": 4.5,
       "alwaysOutputData": true,
       "continueOnFail": true,
-      "position": [1580, 340],
+      "position": [1540, 400],
       "credentials": { "googleSheetsOAuth2Api": { "id": "CONFIGURE_IN_N8N", "name": "Google Sheets OAuth2" } },
       "parameters": {
         "operation": "appendOrUpdate",
-        "documentId": { "mode": "id", "value": "={{ $('CODE | Validate Content & Sync Action').item.json.sheet_id || '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs' }}" },
+        "documentId": { "mode": "id", "value": "={{ $('CODE | Validate Content & Sync Action').first().json.sheet_id || '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs' }}" },
         "sheetName": { "mode": "name", "value": "ExecutionLogs" },
         "columns": { "mappingMode": "autoMapInputData", "matchingColumns": ["log_id"] }
       }
@@ -251,11 +233,11 @@
       "typeVersion": 4.5,
       "alwaysOutputData": true,
       "continueOnFail": true,
-      "position": [1580, 440],
+      "position": [1540, 500],
       "credentials": { "googleSheetsOAuth2Api": { "id": "CONFIGURE_IN_N8N", "name": "Google Sheets OAuth2" } },
       "parameters": {
         "operation": "appendOrUpdate",
-        "documentId": { "mode": "id", "value": "={{ $('CODE | Validate Content & Sync Action').item.json.sheet_id || '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs' }}" },
+        "documentId": { "mode": "id", "value": "={{ $('CODE | Validate Content & Sync Action').first().json.sheet_id || '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs' }}" },
         "sheetName": { "mode": "name", "value": "Accounts" },
         "columns": { "mappingMode": "autoMapInputData", "matchingColumns": ["ig_user_id"] }
       }
@@ -265,9 +247,9 @@
       "name": "CODE | Verify Outbox Sheet Write",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1820, 280],
+      "position": [1800, 320],
       "parameters": {
-        "jsCode": "var req = $('CODE | Validate Content & Sync Action').item.json;\nvar out = $input.first() && $input.first().json ? $input.first().json : {};\nif (out.error) {\n  return [{ json: { ok: false, synced: false, sync_id: (req.body && req.body.sync_id) || '', entity_type: req.entity_type, entity_uuid: req.entity_uuid, error: String(out.error.message || out.error) } }];\n}\nvar hasMatchedId = Boolean(out.post_uuid || out.post_id || out.asset_uuid || out.internal_asset_id || out.log_id || out.ig_user_id || out.account_key);\nif (!hasMatchedId) {\n  return [{ json: { ok: false, synced: false, sync_id: (req.body && req.body.sync_id) || '', entity_type: req.entity_type, entity_uuid: req.entity_uuid, error: 'Google Sheets write returned unverified empty confirmation.' } }];\n}\nreturn [{ json: { ok: true, synced: true, sync_id: (req.body && req.body.sync_id) || '', entity_type: req.entity_type, entity_uuid: req.entity_uuid, post_id: req.post_id } }];"
+        "jsCode": "var req = $('CODE | Validate Content & Sync Action').first().json;\nvar out = $input.first() && $input.first().json ? $input.first().json : {};\nif (out.error) return [{ json: { ok: false, synced: false, sync_id: (req.body && req.body.sync_id) || '', entity_type: req.entity_type, entity_uuid: req.entity_uuid, error: String(out.error.message || out.error) } }];\nvar hasId = Boolean(out.post_uuid || out.post_id || out.asset_uuid || out.internal_asset_id || out.log_id || out.ig_user_id || out.account_key);\nif (!hasId) return [{ json: { ok: false, synced: false, sync_id: (req.body && req.body.sync_id) || '', entity_type: req.entity_type, entity_uuid: req.entity_uuid, error: 'Google Sheets write returned unverified empty confirmation.' } }];\nreturn [{ json: { ok: true, synced: true, sync_id: (req.body && req.body.sync_id) || '', entity_type: req.entity_type, entity_uuid: req.entity_uuid, post_id: req.post_id } }];"
       }
     },
     {
@@ -275,9 +257,9 @@
       "name": "CODE | Build Legacy Row Mutation",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1120, 500],
+      "position": [1060, 560],
       "parameters": {
-        "jsCode": "var req = $('CODE | Validate Content & Sync Action').item.json;\nvar b = req.body || {};\nvar row = Object.assign({}, b.row || b.record || { post_id: req.post_id, updated_at: new Date().toISOString() });\nif (!row.post_uuid && req.entity_uuid) row.post_uuid = req.entity_uuid;\nreturn [{ json: row }];"
+        "jsCode": "var req = $('CODE | Validate Content & Sync Action').first().json;\nvar b = req.body || {};\nvar row = Object.assign({}, b.row || b.record || { post_id: req.post_id, updated_at: new Date().toISOString() });\nif (!row.post_uuid && req.entity_uuid) row.post_uuid = req.entity_uuid;\nreturn [{ json: row }];"
       }
     },
     {
@@ -287,11 +269,11 @@
       "typeVersion": 4.5,
       "alwaysOutputData": true,
       "continueOnFail": true,
-      "position": [1360, 500],
+      "position": [1300, 560],
       "credentials": { "googleSheetsOAuth2Api": { "id": "CONFIGURE_IN_N8N", "name": "Google Sheets OAuth2" } },
       "parameters": {
         "operation": "appendOrUpdate",
-        "documentId": { "mode": "id", "value": "={{ $('CODE | Validate Content & Sync Action').item.json.sheet_id || '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs' }}" },
+        "documentId": { "mode": "id", "value": "={{ $('CODE | Validate Content & Sync Action').first().json.sheet_id || '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs' }}" },
         "sheetName": { "mode": "name", "value": "Posts" },
         "columns": { "mappingMode": "autoMapInputData", "matchingColumns": ["post_id"] }
       }
@@ -301,27 +283,278 @@
       "name": "CODE | Format Mutated Row",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1600, 500],
+      "position": [1540, 560],
       "parameters": {
         "jsCode": "var out = $input.first() && $input.first().json ? $input.first().json : {};\nif (out.error) return [{ json: { ok: false, error: String(out.error.message || out.error) } }];\nreturn [{ json: { ok: true, row: out } }];"
       }
     },
     {
-      "id": "w04-del-orchestrator",
-      "name": "CODE | Hardened Cloudinary Destroy Orchestrator",
+      "id": "w04-del-read-post",
+      "name": "HTTP | W04 Read Authoritative Post",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "continueOnFail": true,
+      "position": [1060, 760],
+      "credentials": { "httpCustomAuth": { "id": "CONFIGURE_IN_N8N", "name": "InstaOps Supabase Service Role Auth" } },
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('CODE | Validate Content & Sync Action').first().json.sb_url + '/rest/v1/instaops_posts?' + ($('CODE | Validate Content & Sync Action').first().json.entity_uuid ? ('id=eq.' + encodeURIComponent($('CODE | Validate Content & Sync Action').first().json.entity_uuid)) : ('post_id=eq.' + encodeURIComponent($('CODE | Validate Content & Sync Action').first().json.post_id))) + '&select=*' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "options": { "timeout": 15000, "response": { "response": { "fullResponse": true, "neverError": true } } }
+      }
+    },
+    {
+      "id": "w04-del-check-post",
+      "name": "CODE | Check Deletion Post Exists",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1120, 680],
+      "position": [1280, 760],
       "parameters": {
-        "jsCode": "// Safeguard marker: INSTAOPS_V2_CONTENT — enforces LIVE_DELETE_ENABLED, verifies post_uuid ownership against Supabase media_assets, preserves resource_type/delivery_type, calls /destroy per asset.\nreturn (async function () {\n  var self = this;\n  function readCfg(key, fallback) {\n    var blocked = false;\n    try { if (typeof $env !== 'undefined' && $env && $env[key] !== undefined && $env[key] !== null && $env[key] !== '') return { value: String($env[key]), source: 'env', blocked: false }; } catch (_) { blocked = true; }\n    try { if (typeof $vars !== 'undefined' && $vars && $vars[key] !== undefined && $vars[key] !== null && $vars[key] !== '') return { value: String($vars[key]), source: 'vars', blocked: blocked }; } catch (_) {}\n    return { value: fallback || '', source: fallback ? 'default' : 'missing', blocked: blocked };\n  }\n  async function httpCall(opts) {\n    if (self && self.helpers && typeof self.helpers.httpRequest === 'function') return await self.helpers.httpRequest(opts);\n    if (typeof fetch === 'function') {\n      var headers = Object.assign({}, opts.headers || {});\n      var body = opts.body !== undefined ? (typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body)) : undefined;\n      if (body && !headers['Content-Type']) headers['Content-Type'] = 'application/json';\n      var res = await fetch(opts.url, { method: opts.method || 'GET', headers: headers, body: body });\n      var text = await res.text();\n      var parsed = text;\n      try { parsed = text ? JSON.parse(text) : {}; } catch (_) {}\n      return { statusCode: res.status, body: parsed, headers: {} };\n    }\n    throw new Error('No HTTP helper available.');\n  }\n  function sha1Hex(str) {\n    function rotl(n, s) { return (n << s) | (n >>> (32 - s)); }\n    var utf8 = unescape(encodeURIComponent(str));\n    var words = [];\n    for (var i = 0; i < utf8.length; i++) words[i >> 2] = (words[i >> 2] || 0) | ((utf8.charCodeAt(i) & 0xff) << (24 - (i % 4) * 8));\n    words[utf8.length >> 2] = (words[utf8.length >> 2] || 0) | (0x80 << (24 - (utf8.length % 4) * 8));\n    words[((utf8.length + 8) >> 6 << 4) + 15] = utf8.length * 8;\n    var h0 = 0x67452301, h1 = 0xefcdab89, h2 = 0x98badcfe, h3 = 0x10325476, h4 = 0xc3d2e1f0;\n    var w = new Array(80);\n    for (var i = 0; i < words.length; i += 16) {\n      var a = h0, b = h1, c = h2, d = h3, e = h4;\n      for (var t = 0; t < 80; t++) {\n        w[t] = t < 16 ? (words[i + t] || 0) : rotl(w[t - 3] ^ w[t - 8] ^ w[t - 14] ^ w[t - 16], 1);\n        var f = t < 20 ? ((b & c) | ((~b) & d)) + 0x5a827999 : t < 40 ? (b ^ c ^ d) + 0x6ed9eba1 : t < 60 ? ((b & c) | (b & d) | (c & d)) + 0x8f1bbcdc : (b ^ c ^ d) + 0xca62c1d6;\n        var temp = (rotl(a, 5) + f + e + w[t]) >>> 0;\n        e = d; d = c; c = rotl(b, 30) >>> 0; b = a; a = temp;\n      }\n      h0 = (h0 + a) >>> 0; h1 = (h1 + b) >>> 0; h2 = (h2 + c) >>> 0; h3 = (h3 + d) >>> 0; h4 = (h4 + e) >>> 0;\n    }\n    return [h0, h1, h2, h3, h4].map(function (n) { return n.toString(16).padStart(8, '0'); }).join('');\n  }\n\n  var req = $('CODE | Validate Content & Sync Action').item.json;\n  var liveDelCfg = readCfg('LIVE_DELETE_ENABLED', 'false');\n  if (liveDelCfg.value.toLowerCase() !== 'true' || !req.body || req.body.confirm !== true) {\n    return [{ json: { ok: false, error: 'Deletion blocked inside W04 (requires LIVE_DELETE_ENABLED=true and confirm=true).' } }];\n  }\n\n  var sbUrlCfg = readCfg('SUPABASE_URL', 'https://cdgwdlhesgcxmswsamrj.supabase.co');\n  var sbKeyCfg = readCfg('SUPABASE_SERVICE_ROLE_KEY', '');\n  var cldNameCfg = readCfg('CLOUDINARY_CLOUD_NAME', 'djkkknb9k');\n  var cldKeyCfg = readCfg('CLOUDINARY_API_KEY', '');\n  var cldSecretCfg = readCfg('CLOUDINARY_API_SECRET', '');\n  if (!sbKeyCfg.value || !cldKeyCfg.value || !cldSecretCfg.value) {\n    return [{ json: { ok: false, error: (sbKeyCfg.blocked || cldKeyCfg.blocked || cldSecretCfg.blocked) ? 'n8n $env/secret access denied; configure N8N_BLOCK_ENV_ACCESS_IN_NODE=false or $vars.' : 'Missing Supabase or Cloudinary credentials in n8n.' } }];\n  }\n\n  var sbUrl = sbUrlCfg.value.replace(/\\/$/, '');\n  var sbHeaders = { apikey: sbKeyCfg.value, Authorization: 'Bearer ' + sbKeyCfg.value, 'Content-Type': 'application/json' };\n  var cloudName = cldNameCfg.value;\n  var postFilter = req.entity_uuid ? ('id=eq.' + encodeURIComponent(req.entity_uuid)) : ('post_id=eq.' + encodeURIComponent(req.post_id));\n  var postGet = await httpCall({ method: 'GET', url: sbUrl + '/rest/v1/instaops_posts?' + postFilter + '&select=*', headers: sbHeaders, json: true, returnFullResponse: true, ignoreHttpStatusErrors: true, timeout: 15000 });\n  var post = Array.isArray(postGet.body) ? postGet.body[0] : null;\n  if (!post) {\n    return [{ json: { ok: false, error: 'Authoritative post not found in Supabase.' } }];\n  }\n  if (post.status === 'PUBLISHING' || post.status === 'VERIFY_MANUALLY') {\n    return [{ json: { ok: false, error: 'Cannot delete while post is in ' + post.status + ' status.' } }];\n  }\n  if (req.action === 'DELETE_POST' && (post.status === 'PUBLISHED' || (post.published_id && String(post.published_id).trim() !== ''))) {\n    return [{ json: { ok: false, error: 'Published post cannot be deleted; archive instead.' } }];\n  }\n\n  var assetsGet = await httpCall({ method: 'GET', url: sbUrl + '/rest/v1/instaops_media_assets?post_uuid=eq.' + encodeURIComponent(post.id) + '&order=media_index.asc', headers: sbHeaders, json: true, returnFullResponse: true, ignoreHttpStatusErrors: true, timeout: 15000 });\n  var dbAssets = Array.isArray(assetsGet.body) ? assetsGet.body : [];\n  var reqAssetIds = Array.isArray(req.body.asset_ids) ? req.body.asset_ids.map(String) : (Array.isArray(req.body.assets) ? req.body.assets.map(function (a) { return String(a.internal_asset_id || ''); }).filter(Boolean) : []);\n\n  var targetAssets = [];\n  var outcomes = [];\n  var failedCount = 0;\n\n  if (reqAssetIds.length > 0) {\n    for (var ri = 0; ri < reqAssetIds.length; ri++) {\n      var wantedId = reqAssetIds[ri];\n      var matched = dbAssets.find(function (a) { return a.internal_asset_id === wantedId && a.post_uuid === post.id; });\n      if (!matched) {\n        failedCount++;\n        outcomes.push({ internal_asset_id: wantedId, public_id: '', result: 'error', error: 'Asset not owned by target post_uuid in Supabase' });\n      } else if (matched.storage_status !== 'DELETED') {\n        targetAssets.push(matched);\n      }\n    }\n  } else {\n    targetAssets = dbAssets.filter(function (a) { return a.post_uuid === post.id && a.storage_status !== 'DELETED'; });\n  }\n\n  for (var ai = 0; ai < targetAssets.length; ai++) {\n    var ast = targetAssets[ai];\n    var pubId = String(ast.cloudinary_public_id || '').trim();\n    var resType = String(ast.resource_type || 'video').trim().toLowerCase();\n    var delType = String(ast.delivery_type || 'upload').trim().toLowerCase();\n    if (!pubId || ['image', 'video', 'raw'].indexOf(resType) === -1) {\n      failedCount++;\n      outcomes.push({ internal_asset_id: ast.internal_asset_id, public_id: pubId, result: 'error', error: 'Invalid or missing cloudinary_public_id/resource_type in DB asset' });\n      continue;\n    }\n    var ts = String(Math.floor(Date.now() / 1000));\n    var signStr = delType && delType !== 'upload'\n      ? ('invalidate=true&public_id=' + pubId + '&timestamp=' + ts + '&type=' + delType + cldSecretCfg.value)\n      : ('invalidate=true&public_id=' + pubId + '&timestamp=' + ts + cldSecretCfg.value);\n    var sig = sha1Hex(signStr);\n    var form = 'public_id=' + encodeURIComponent(pubId)\n      + (delType && delType !== 'upload' ? '&type=' + encodeURIComponent(delType) : '')\n      + '&invalidate=true&timestamp=' + encodeURIComponent(ts)\n      + '&api_key=' + encodeURIComponent(cldKeyCfg.value)\n      + '&signature=' + encodeURIComponent(sig);\n    try {\n      var dRes = await httpCall({\n        method: 'POST',\n        url: 'https://api.cloudinary.com/v1_1/' + encodeURIComponent(cloudName) + '/' + resType + '/destroy',\n        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },\n        body: form,\n        json: false,\n        returnFullResponse: true,\n        ignoreHttpStatusErrors: true,\n        timeout: 30000\n      });\n      var dBody = typeof dRes.body === 'string' ? (function () { try { return JSON.parse(dRes.body); } catch (_) { return {}; } })() : (dRes.body || {});\n      var cldResult = String(dBody.result || '').toLowerCase();\n      if (dRes.statusCode < 300 && !dBody.error && (cldResult === 'ok' || cldResult === 'not found')) {\n        outcomes.push({ internal_asset_id: ast.internal_asset_id, public_id: pubId, resource_type: resType, delivery_type: delType, result: cldResult, error: '' });\n      } else {\n        failedCount++;\n        var errStr = (dBody.error && dBody.error.message) || ('Cloudinary destroy failed (HTTP ' + dRes.statusCode + ', result=' + (dBody.result || 'unknown') + ')');\n        outcomes.push({ internal_asset_id: ast.internal_asset_id, public_id: pubId, resource_type: resType, delivery_type: delType, result: 'error', error: errStr });\n      }\n    } catch (dNetErr) {\n      failedCount++;\n      outcomes.push({ internal_asset_id: ast.internal_asset_id, public_id: pubId, resource_type: resType, delivery_type: delType, result: 'error', error: dNetErr && dNetErr.message ? dNetErr.message : 'Network error during Cloudinary destroy' });\n    }\n  }\n\n  var finalStatus = failedCount > 0 ? 'FAILED' : (req.action === 'DELETE_POST' ? 'DELETED' : 'MEDIA_DELETED');\n  return [{ json: { ok: true, post_uuid: post.id, post_id: post.post_id, status: finalStatus, outcomes: outcomes, partial_failure: failedCount > 0 } }];\n}).call(this);"
+        "jsCode": "var req = $('CODE | Validate Content & Sync Action').first().json;\nvar raw = $input.first().json || {};\nvar body = raw.body !== undefined ? raw.body : raw;\nvar post = Array.isArray(body) ? body[0] : body;\nvar exists = Boolean(!raw.error && post && post.id);\nvar lockKey = exists ? ('post:' + post.id) : (req.lock_key || ('post:' + req.post_id));\nreturn [{ json: { exists: exists, post: post || {}, lock_key: lockKey, error: exists ? '' : 'Authoritative post not found in Supabase.' } }];"
       }
+    },
+    {
+      "id": "w04-del-if-post",
+      "name": "IF | W04 Post Found",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1500, 760],
+      "parameters": { "conditions": { "boolean": [{ "value1": "={{ $json.exists }}", "value2": true }] } }
+    },
+    {
+      "id": "w04-del-read-assets",
+      "name": "HTTP | W04 Read Authoritative Assets",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "continueOnFail": true,
+      "position": [1740, 700],
+      "credentials": { "httpCustomAuth": { "id": "CONFIGURE_IN_N8N", "name": "InstaOps Supabase Service Role Auth" } },
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('CODE | Validate Content & Sync Action').first().json.sb_url + '/rest/v1/instaops_media_assets?post_uuid=eq.' + encodeURIComponent($('CODE | Check Deletion Post Exists').first().json.post.id) + '&order=media_index.asc' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "options": { "timeout": 15000, "response": { "response": { "fullResponse": true, "neverError": true } } }
+      }
+    },
+    {
+      "id": "w04-del-check-lock",
+      "name": "HTTP | W04 Check Canonical Post Lock",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "continueOnFail": true,
+      "position": [1960, 700],
+      "credentials": { "httpCustomAuth": { "id": "CONFIGURE_IN_N8N", "name": "InstaOps Supabase Service Role Auth" } },
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('CODE | Validate Content & Sync Action').first().json.sb_url + '/rest/v1/instaops_job_locks?lock_key=eq.' + encodeURIComponent($('CODE | Check Deletion Post Exists').first().json.lock_key) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "options": { "timeout": 15000, "response": { "response": { "fullResponse": true, "neverError": true } } }
+      }
+    },
+    {
+      "id": "w04-del-check-jobs",
+      "name": "HTTP | W04 Check Unresolved Publish Jobs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "continueOnFail": true,
+      "position": [2180, 700],
+      "credentials": { "httpCustomAuth": { "id": "CONFIGURE_IN_N8N", "name": "InstaOps Supabase Service Role Auth" } },
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('CODE | Validate Content & Sync Action').first().json.sb_url + '/rest/v1/instaops_jobs?post_uuid=eq.' + encodeURIComponent($('CODE | Check Deletion Post Exists').first().json.post.id) + '&operation=eq.PUBLISH&status=in.(QUEUED,RUNNING,OUTCOME_UNKNOWN)&limit=1' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "options": { "timeout": 15000, "response": { "response": { "fullResponse": true, "neverError": true } } }
+      }
+    },
+    {
+      "id": "w04-del-verify-gate",
+      "name": "CODE | Verify Deletion Gate & Lock Ownership",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2400, 700],
+      "parameters": {
+        "jsCode": "// Enforce LIVE_DELETE_ENABLED, post state, unresolved publish jobs, and authoritative deletion lock before ANY Cloudinary /destroy call.\nfunction unpack(raw) {\n  var r = raw || {};\n  return r.body !== undefined ? r.body : r;\n}\nvar req = $('CODE | Validate Content & Sync Action').first().json;\nvar chk = $('CODE | Check Deletion Post Exists').first().json;\nvar post = chk.post;\nvar lockKey = chk.lock_key;\n\nfunction blocked(msg) {\n  return [{ json: { decision: 'BLOCKED', result: { ok: false, error: msg } } }];\n}\nif (!req.live_delete_enabled || !req.body || req.body.confirm !== true) {\n  return blocked('Deletion blocked inside W04 (requires LIVE_DELETE_ENABLED=true and confirm=true).');\n}\nif (post.status === 'PUBLISHING' || post.status === 'VERIFY_MANUALLY') {\n  return blocked('Cannot delete while post is in ' + post.status + ' status.');\n}\nif (req.action === 'DELETE_POST' && (post.status === 'PUBLISHED' || (post.published_id && String(post.published_id).trim() !== ''))) {\n  return blocked('Published post cannot be deleted; archive instead.');\n}\n\nvar pubJobsRaw = unpack($('HTTP | W04 Check Unresolved Publish Jobs').first().json);\nvar pubJobs = Array.isArray(pubJobsRaw) ? pubJobsRaw : [];\nif (pubJobs.length > 0) {\n  return blocked('Cannot delete while an unresolved PUBLISH job (' + String(pubJobs[0].status || 'ACTIVE') + ') exists.');\n}\n\nvar locksRaw = unpack($('HTTP | W04 Check Canonical Post Lock').first().json);\nvar locks = Array.isArray(locksRaw) ? locksRaw : (locksRaw && locksRaw.lock_key ? [locksRaw] : []);\nvar nowMs = Date.now();\nvar activeLock = locks.find(function (l) { return l && l.lock_key === lockKey && (!l.expires_at || Date.parse(String(l.expires_at)) >= nowMs); });\n\nvar decision = 'NEEDS_CLAIM';\nif (activeLock) {\n  var sameOwner = Boolean(req.lock_owner && String(activeLock.owner_id) === req.lock_owner);\n  var deleteOp = ['DELETE_MEDIA', 'DELETE_POST'].indexOf(String(activeLock.operation || '').toUpperCase()) !== -1;\n  if (!sameOwner || !deleteOp) {\n    return blocked('Deletion lock conflict: active ' + String(activeLock.operation) + ' lock owned by ' + String(activeLock.owner_id) + '.');\n  }\n  decision = 'OWNER_VERIFIED';\n}\n\nvar assetsRaw = unpack($('HTTP | W04 Read Authoritative Assets').first().json);\nvar dbAssets = Array.isArray(assetsRaw) ? assetsRaw : [];\nvar reqAssetIds = Array.isArray(req.body.asset_ids) ? req.body.asset_ids.map(String) : (Array.isArray(req.body.assets) ? req.body.assets.map(function (a) { return String(a.internal_asset_id || ''); }).filter(Boolean) : []);\n\nvar queue = [];\nvar outcomes = [];\nvar failedCount = 0;\nif (reqAssetIds.length > 0) {\n  for (var ri = 0; ri < reqAssetIds.length; ri++) {\n    var wantedId = reqAssetIds[ri];\n    var matched = dbAssets.find(function (a) { return a.internal_asset_id === wantedId && a.post_uuid === post.id; });\n    if (!matched) {\n      failedCount++;\n      outcomes.push({ internal_asset_id: wantedId, public_id: '', result: 'error', error: 'Asset not owned by target post_uuid in Supabase' });\n    } else if (matched.storage_status !== 'DELETED') {\n      queue.push(matched);\n    }\n  }\n} else {\n  queue = dbAssets.filter(function (a) { return a.post_uuid === post.id && a.storage_status !== 'DELETED'; });\n}\n\nreturn [{\n  json: {\n    decision: decision,\n    lock_key: lockKey,\n    post: post,\n    acquired_w04_lock: false,\n    _delLoop: { post: post, lock_key: lockKey, acquired_w04_lock: false, queue: queue, idx: 0, outcomes: outcomes, failedCount: failedCount }\n  }\n}];"
+      }
+    },
+    {
+      "id": "w04-del-switch-lock",
+      "name": "SWITCH | W04 Deletion Lock Decision",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [2640, 700],
+      "parameters": {
+        "rules": {
+          "values": [
+            { "outputKey": "OWNER_VERIFIED", "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $json.decision }}", "rightValue": "OWNER_VERIFIED", "operator": { "type": "string", "operation": "equals" } }] } },
+            { "outputKey": "NEEDS_CLAIM", "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $json.decision }}", "rightValue": "NEEDS_CLAIM", "operator": { "type": "string", "operation": "equals" } }] } }
+          ]
+        },
+        "options": { "fallbackOutput": "extra" }
+      }
+    },
+    {
+      "id": "w04-del-acquire-lock",
+      "name": "HTTP | W04 Acquire Canonical Delete Lock",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "continueOnFail": true,
+      "position": [2880, 740],
+      "credentials": { "httpCustomAuth": { "id": "CONFIGURE_IN_N8N", "name": "InstaOps Supabase Service Role Auth" } },
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CODE | Validate Content & Sync Action').first().json.sb_url + '/rest/v1/rpc/instaops_acquire_lock' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_lock_key: $json.lock_key, p_post_uuid: $json.post.id, p_post_id: $json.post.post_id, p_operation: $('CODE | Validate Content & Sync Action').first().json.action, p_owner_id: $('CODE | Validate Content & Sync Action').first().json.w04_owner, p_request_id: $('CODE | Validate Content & Sync Action').first().json.request_id || $('CODE | Validate Content & Sync Action').first().json.w04_owner, p_lease_seconds: 300 }) }}",
+        "options": { "timeout": 15000, "response": { "response": { "fullResponse": true, "neverError": true } } }
+      }
+    },
+    {
+      "id": "w04-del-eval-claim",
+      "name": "CODE | Evaluate W04 Direct Lock Claim",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3100, 740],
+      "parameters": {
+        "jsCode": "var gate = $('CODE | Verify Deletion Gate & Lock Ownership').first().json;\nvar raw = $input.first().json || {};\nvar sc = raw.statusCode !== undefined ? Number(raw.statusCode) : (raw.error ? 0 : 200);\nvar body = raw.body !== undefined ? raw.body : raw;\nvar rows = Array.isArray(body) ? body : [body];\nvar row = rows[0] || {};\nvar acquired = !raw.error && sc < 300 && row.acquired === true;\nvar loop = Object.assign({}, gate._delLoop, { acquired_w04_lock: acquired });\nreturn [{ json: { acquired: acquired, _delLoop: loop, result: { ok: false, error: 'Deletion lock conflict (' + String(row.operation || 'LOCKED') + ' held by ' + String(row.owner_id || 'another worker') + ').' } } }];"
+      }
+    },
+    {
+      "id": "w04-del-if-claim",
+      "name": "IF | W04 Direct Lock Acquired",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [3320, 740],
+      "parameters": { "conditions": { "boolean": [{ "value1": "={{ $json.acquired }}", "value2": true }] } }
+    },
+    {
+      "id": "w04-del-abort",
+      "name": "CODE | Build W04 Abort Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3560, 920],
+      "parameters": {
+        "jsCode": "var inp = $input.first().json || {};\nif (inp.result) return [{ json: inp.result }];\nreturn [{ json: { ok: false, error: String(inp.error || 'Deletion rejected.') } }];"
+      }
+    },
+    {
+      "id": "w04-del-prep-next",
+      "name": "CODE | Prepare Next Cloudinary Destroy",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3560, 660],
+      "parameters": {
+        "jsCode": "function readCfg(key, fallback) {\n  var blocked = false;\n  try { if (typeof $vars !== 'undefined' && $vars && $vars[key]) return { value: String($vars[key]), blocked: false }; } catch (_) {}\n  try { if (typeof $env !== 'undefined' && $env && $env[key]) return { value: String($env[key]), blocked: false }; } catch (_) { blocked = true; }\n  return { value: fallback || '', blocked: blocked };\n}\nfunction sha1Hex(str) {\n  function rotl(n, s) { return (n << s) | (n >>> (32 - s)); }\n  var utf8 = unescape(encodeURIComponent(str));\n  var words = [];\n  for (var i = 0; i < utf8.length; i++) words[i >> 2] = (words[i >> 2] || 0) | ((utf8.charCodeAt(i) & 0xff) << (24 - (i % 4) * 8));\n  words[utf8.length >> 2] = (words[utf8.length >> 2] || 0) | (0x80 << (24 - (utf8.length % 4) * 8));\n  words[((utf8.length + 8) >> 6 << 4) + 15] = utf8.length * 8;\n  var h0 = 0x67452301, h1 = 0xefcdab89, h2 = 0x98badcfe, h3 = 0x10325476, h4 = 0xc3d2e1f0;\n  var w = new Array(80);\n  for (var i = 0; i < words.length; i += 16) {\n    var a = h0, b = h1, c = h2, d = h3, e = h4;\n    for (var t = 0; t < 80; t++) {\n      w[t] = t < 16 ? (words[i + t] || 0) : rotl(w[t - 3] ^ w[t - 8] ^ w[t - 14] ^ w[t - 16], 1);\n      var f = t < 20 ? ((b & c) | ((~b) & d)) + 0x5a827999 : t < 40 ? (b ^ c ^ d) + 0x6ed9eba1 : t < 60 ? ((b & c) | (b & d) | (c & d)) + 0x8f1bbcdc : (b ^ c ^ d) + 0xca62c1d6;\n      var temp = (rotl(a, 5) + f + e + w[t]) >>> 0;\n      e = d; d = c; c = rotl(b, 30) >>> 0; b = a; a = temp;\n    }\n    h0 = (h0 + a) >>> 0; h1 = (h1 + b) >>> 0; h2 = (h2 + c) >>> 0; h3 = (h3 + d) >>> 0; h4 = (h4 + e) >>> 0;\n  }\n  return [h0, h1, h2, h3, h4].map(function (n) { return n.toString(16).padStart(8, '0'); }).join('');\n}\n\nvar req = $('CODE | Validate Content & Sync Action').first().json;\nvar inp = $input.first().json || {};\nvar loop = Object.assign({}, inp._delLoop);\nvar idx = Number(loop.idx || 0);\nvar queue = Array.isArray(loop.queue) ? loop.queue : [];\nif (idx >= queue.length) {\n  return [{ json: { step: 'DONE', _delLoop: loop } }];\n}\n\nvar cldKeyCfg = readCfg('CLOUDINARY_API_KEY', '');\nvar cldSecCfg = readCfg('CLOUDINARY_API_SECRET', '');\nvar ast = queue[idx];\nvar pubId = String(ast.cloudinary_public_id || '').trim();\nvar resType = String(ast.resource_type || 'video').trim().toLowerCase();\nvar delType = String(ast.delivery_type || 'upload').trim().toLowerCase();\n\nif (!cldKeyCfg.value || !cldSecCfg.value || !pubId || ['image', 'video', 'raw'].indexOf(resType) === -1) {\n  var errReason = (!cldKeyCfg.value || !cldSecCfg.value) ? 'Missing Cloudinary API credentials for signing.' : 'Invalid or missing cloudinary_public_id/resource_type in DB asset.';\n  var outcomes = loop.outcomes.slice();\n  outcomes.push({ internal_asset_id: ast.internal_asset_id, public_id: pubId, result: 'error', error: errReason });\n  loop.outcomes = outcomes;\n  loop.failedCount = Number(loop.failedCount || 0) + 1;\n  loop.idx = idx + 1;\n  return [{ json: { step: loop.idx >= queue.length ? 'DONE' : 'SKIP_TO_NEXT', _delLoop: loop } }];\n}\n\nvar ts = String(Math.floor(Date.now() / 1000));\n// Body always includes type=<delivery_type>, so signStr always includes &type= in alphabetical order.\nvar signStr = 'invalidate=true&public_id=' + pubId + '&timestamp=' + ts + '&type=' + delType + cldSecCfg.value;\nreturn [{\n  json: {\n    step: 'DESTROY_HTTP',\n    destroy_url: 'https://api.cloudinary.com/v1_1/' + encodeURIComponent(req.cld_cloud) + '/' + resType + '/destroy',\n    internal_asset_id: ast.internal_asset_id,\n    public_id: pubId,\n    resource_type: resType,\n    delivery_type: delType,\n    include_type_param: true,\n    timestamp: ts,\n    api_key: cldKeyCfg.value,\n    signature: sha1Hex(signStr),\n    _delLoop: loop\n  }\n}];"
+      }
+    },
+    {
+      "id": "w04-del-switch-step",
+      "name": "SWITCH | Destroy Step Decision",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [3800, 660],
+      "parameters": {
+        "rules": {
+          "values": [
+            { "outputKey": "DESTROY_HTTP", "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $json.step }}", "rightValue": "DESTROY_HTTP", "operator": { "type": "string", "operation": "equals" } }] } },
+            { "outputKey": "SKIP_TO_NEXT", "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $json.step }}", "rightValue": "SKIP_TO_NEXT", "operator": { "type": "string", "operation": "equals" } }] } }
+          ]
+        },
+        "options": { "fallbackOutput": "extra" }
+      }
+    },
+    {
+      "id": "w04-del-http",
+      "name": "HTTP | Cloudinary Destroy Asset",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "continueOnFail": true,
+      "position": [4040, 560],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.destroy_url }}",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            { "name": "public_id", "value": "={{ $json.public_id }}" },
+            { "name": "type", "value": "={{ $json.delivery_type }}" },
+            { "name": "invalidate", "value": "true" },
+            { "name": "timestamp", "value": "={{ $json.timestamp }}" },
+            { "name": "api_key", "value": "={{ $json.api_key }}" },
+            { "name": "signature", "value": "={{ $json.signature }}" }
+          ]
+        },
+        "options": { "timeout": 30000, "response": { "response": { "fullResponse": true, "neverError": true } } }
+      }
+    },
+    {
+      "id": "w04-del-record",
+      "name": "CODE | Record Destroy Outcome",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4260, 560],
+      "parameters": {
+        "jsCode": "var prep = $('CODE | Prepare Next Cloudinary Destroy').last().json;\nvar loop = Object.assign({}, prep._delLoop);\nvar outcomes = Array.isArray(loop.outcomes) ? loop.outcomes.slice() : [];\nvar raw = $input.first().json || {};\nvar netErr = Boolean(raw.error && raw.statusCode === undefined);\nvar sc = raw.statusCode !== undefined ? Number(raw.statusCode) : (netErr ? 0 : 200);\nvar dBody = raw.body !== undefined ? raw.body : raw;\nif (typeof dBody === 'string') { try { dBody = JSON.parse(dBody); } catch (_) { dBody = {}; } }\ndBody = dBody || {};\nvar cldResult = String(dBody.result || '').toLowerCase();\n\nif (!netErr && sc < 300 && !dBody.error && (cldResult === 'ok' || cldResult === 'not found')) {\n  outcomes.push({ internal_asset_id: prep.internal_asset_id, public_id: prep.public_id, resource_type: prep.resource_type, delivery_type: prep.delivery_type, result: cldResult, error: '' });\n} else {\n  loop.failedCount = Number(loop.failedCount || 0) + 1;\n  var errStr = netErr ? String(raw.error.message || 'Network error during Cloudinary destroy') : ((dBody.error && dBody.error.message) || ('Cloudinary destroy failed (HTTP ' + sc + ', result=' + (dBody.result || 'unknown') + ')'));\n  outcomes.push({ internal_asset_id: prep.internal_asset_id, public_id: prep.public_id, resource_type: prep.resource_type, delivery_type: prep.delivery_type, result: 'error', error: errStr });\n}\nloop.outcomes = outcomes;\nloop.idx = Number(loop.idx || 0) + 1;\nreturn [{ json: { _delLoop: loop } }];"
+      }
+    },
+    {
+      "id": "w04-del-build-res",
+      "name": "CODE | Build W04 Delete Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4040, 760],
+      "parameters": {
+        "jsCode": "var req = $('CODE | Validate Content & Sync Action').first().json;\nvar loop = ($input.first().json || {})._delLoop || {};\nvar failedCount = Number(loop.failedCount || 0);\nvar post = loop.post || {};\nvar finalStatus = failedCount > 0 ? 'FAILED' : (req.action === 'DELETE_POST' ? 'DELETED' : 'MEDIA_DELETED');\nreturn [{\n  json: {\n    acquired_w04_lock: Boolean(loop.acquired_w04_lock),\n    lock_key: String(loop.lock_key || ''),\n    response: { ok: true, post_uuid: post.id, post_id: post.post_id, status: finalStatus, outcomes: loop.outcomes || [], partial_failure: failedCount > 0 }\n  }\n}];"
+      }
+    },
+    {
+      "id": "w04-del-if-release",
+      "name": "IF | W04 Release Direct Delete Lock",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [4260, 760],
+      "parameters": { "conditions": { "boolean": [{ "value1": "={{ $json.acquired_w04_lock }}", "value2": true }] } }
+    },
+    {
+      "id": "w04-del-http-release",
+      "name": "HTTP | W04 Release Direct Delete Lock",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "continueOnFail": true,
+      "position": [4480, 700],
+      "credentials": { "httpCustomAuth": { "id": "CONFIGURE_IN_N8N", "name": "InstaOps Supabase Service Role Auth" } },
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CODE | Validate Content & Sync Action').first().json.sb_url + '/rest/v1/rpc/instaops_release_lock' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_lock_key: $json.lock_key, p_owner_id: $('CODE | Validate Content & Sync Action').first().json.w04_owner }) }}",
+        "options": { "timeout": 15000, "response": { "response": { "fullResponse": true, "neverError": true } } }
+      }
+    },
+    {
+      "id": "w04-del-emit",
+      "name": "CODE | Emit Final W04 Delete Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4700, 760],
+      "parameters": { "jsCode": "return [{ json: $('CODE | Build W04 Delete Response').first().json.response }];" }
     },
     {
       "id": "w04-respond-ok",
       "name": "RESPOND | JSON Result",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [2060, 260],
+      "position": [4960, 280],
       "parameters": {
         "respondWith": "json",
         "responseBody": "={{ JSON.stringify($json) }}",
@@ -343,14 +576,22 @@
         [{ "node": "SHEETS | Read Posts Tab", "type": "main", "index": 0 }],
         [{ "node": "SHEETS | Read MediaAssets Tab", "type": "main", "index": 0 }],
         [{ "node": "CODE | Prepare Outbox Sheet Sync", "type": "main", "index": 0 }],
-        [{ "node": "CODE | Hardened Cloudinary Destroy Orchestrator", "type": "main", "index": 0 }],
+        [{ "node": "HTTP | W04 Read Authoritative Post", "type": "main", "index": 0 }],
         [{ "node": "CODE | Build Legacy Row Mutation", "type": "main", "index": 0 }]
       ]
     },
     "SHEETS | Read Posts Tab": { "main": [[{ "node": "CODE | Format List Posts", "type": "main", "index": 0 }]] },
     "CODE | Format List Posts": { "main": [[{ "node": "RESPOND | JSON Result", "type": "main", "index": 0 }]] },
-    "SHEETS | Read MediaAssets Tab": { "main": [[{ "node": "CODE | Format List Media & Cloudinary Usage", "type": "main", "index": 0 }]] },
-    "CODE | Format List Media & Cloudinary Usage": { "main": [[{ "node": "RESPOND | JSON Result", "type": "main", "index": 0 }]] },
+    "SHEETS | Read MediaAssets Tab": { "main": [[{ "node": "IF | Include Cloudinary Storage", "type": "main", "index": 0 }]] },
+    "IF | Include Cloudinary Storage": {
+      "main": [
+        [{ "node": "HTTP | Probe Cloudinary Usage", "type": "main", "index": 0 }],
+        [{ "node": "CODE | Format List Media Only", "type": "main", "index": 0 }]
+      ]
+    },
+    "HTTP | Probe Cloudinary Usage": { "main": [[{ "node": "CODE | Format List Media With Storage", "type": "main", "index": 0 }]] },
+    "CODE | Format List Media With Storage": { "main": [[{ "node": "RESPOND | JSON Result", "type": "main", "index": 0 }]] },
+    "CODE | Format List Media Only": { "main": [[{ "node": "RESPOND | JSON Result", "type": "main", "index": 0 }]] },
     "CODE | Prepare Outbox Sheet Sync": { "main": [[{ "node": "SWITCH | Route Outbox Entity Tab", "type": "main", "index": 0 }]] },
     "SWITCH | Route Outbox Entity Tab": {
       "main": [
@@ -369,6 +610,52 @@
     "CODE | Build Legacy Row Mutation": { "main": [[{ "node": "SHEETS | AppendOrUpdate By Post ID", "type": "main", "index": 0 }]] },
     "SHEETS | AppendOrUpdate By Post ID": { "main": [[{ "node": "CODE | Format Mutated Row", "type": "main", "index": 0 }]] },
     "CODE | Format Mutated Row": { "main": [[{ "node": "RESPOND | JSON Result", "type": "main", "index": 0 }]] },
-    "CODE | Hardened Cloudinary Destroy Orchestrator": { "main": [[{ "node": "RESPOND | JSON Result", "type": "main", "index": 0 }]] }
+    "HTTP | W04 Read Authoritative Post": { "main": [[{ "node": "CODE | Check Deletion Post Exists", "type": "main", "index": 0 }]] },
+    "CODE | Check Deletion Post Exists": { "main": [[{ "node": "IF | W04 Post Found", "type": "main", "index": 0 }]] },
+    "IF | W04 Post Found": {
+      "main": [
+        [{ "node": "HTTP | W04 Read Authoritative Assets", "type": "main", "index": 0 }],
+        [{ "node": "CODE | Build W04 Abort Response", "type": "main", "index": 0 }]
+      ]
+    },
+    "HTTP | W04 Read Authoritative Assets": { "main": [[{ "node": "HTTP | W04 Check Canonical Post Lock", "type": "main", "index": 0 }]] },
+    "HTTP | W04 Check Canonical Post Lock": { "main": [[{ "node": "HTTP | W04 Check Unresolved Publish Jobs", "type": "main", "index": 0 }]] },
+    "HTTP | W04 Check Unresolved Publish Jobs": { "main": [[{ "node": "CODE | Verify Deletion Gate & Lock Ownership", "type": "main", "index": 0 }]] },
+    "CODE | Verify Deletion Gate & Lock Ownership": { "main": [[{ "node": "SWITCH | W04 Deletion Lock Decision", "type": "main", "index": 0 }]] },
+    "SWITCH | W04 Deletion Lock Decision": {
+      "main": [
+        [{ "node": "CODE | Prepare Next Cloudinary Destroy", "type": "main", "index": 0 }],
+        [{ "node": "HTTP | W04 Acquire Canonical Delete Lock", "type": "main", "index": 0 }],
+        [{ "node": "CODE | Build W04 Abort Response", "type": "main", "index": 0 }]
+      ]
+    },
+    "HTTP | W04 Acquire Canonical Delete Lock": { "main": [[{ "node": "CODE | Evaluate W04 Direct Lock Claim", "type": "main", "index": 0 }]] },
+    "CODE | Evaluate W04 Direct Lock Claim": { "main": [[{ "node": "IF | W04 Direct Lock Acquired", "type": "main", "index": 0 }]] },
+    "IF | W04 Direct Lock Acquired": {
+      "main": [
+        [{ "node": "CODE | Prepare Next Cloudinary Destroy", "type": "main", "index": 0 }],
+        [{ "node": "CODE | Build W04 Abort Response", "type": "main", "index": 0 }]
+      ]
+    },
+    "CODE | Build W04 Abort Response": { "main": [[{ "node": "RESPOND | JSON Result", "type": "main", "index": 0 }]] },
+    "CODE | Prepare Next Cloudinary Destroy": { "main": [[{ "node": "SWITCH | Destroy Step Decision", "type": "main", "index": 0 }]] },
+    "SWITCH | Destroy Step Decision": {
+      "main": [
+        [{ "node": "HTTP | Cloudinary Destroy Asset", "type": "main", "index": 0 }],
+        [{ "node": "CODE | Prepare Next Cloudinary Destroy", "type": "main", "index": 0 }],
+        [{ "node": "CODE | Build W04 Delete Response", "type": "main", "index": 0 }]
+      ]
+    },
+    "HTTP | Cloudinary Destroy Asset": { "main": [[{ "node": "CODE | Record Destroy Outcome", "type": "main", "index": 0 }]] },
+    "CODE | Record Destroy Outcome": { "main": [[{ "node": "CODE | Prepare Next Cloudinary Destroy", "type": "main", "index": 0 }]] },
+    "CODE | Build W04 Delete Response": { "main": [[{ "node": "IF | W04 Release Direct Delete Lock", "type": "main", "index": 0 }]] },
+    "IF | W04 Release Direct Delete Lock": {
+      "main": [
+        [{ "node": "HTTP | W04 Release Direct Delete Lock", "type": "main", "index": 0 }],
+        [{ "node": "CODE | Emit Final W04 Delete Response", "type": "main", "index": 0 }]
+      ]
+    },
+    "HTTP | W04 Release Direct Delete Lock": { "main": [[{ "node": "CODE | Emit Final W04 Delete Response", "type": "main", "index": 0 }]] },
+    "CODE | Emit Final W04 Delete Response": { "main": [[{ "node": "RESPOND | JSON Result", "type": "main", "index": 0 }]] }
   }
 }

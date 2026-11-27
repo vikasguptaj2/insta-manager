@@ -1827,6 +1827,8 @@ export async function deletePostMedia(
         action: 'DELETE_MEDIA',
         post_uuid: post.id ?? '',
         post_id: post.post_id,
+        lock_key: lockKey,
+        lock_owner: ownerId,
         asset_ids: ownedAssets.map((a) => a.internal_asset_id),
         assets: ownedAssets.map((a) => ({
           asset_uuid: a.id ?? '',
@@ -1999,6 +2001,8 @@ export async function deleteSingleMediaAsset(
         action: 'DELETE_MEDIA',
         post_uuid: parent?.id ?? '',
         post_id: asset.post_id,
+        lock_key: lockKey,
+        lock_owner: ownerId,
         asset_ids: [asset.internal_asset_id],
         assets: [
           {
@@ -2166,6 +2170,8 @@ export async function deletePostAndMedia(
             action: 'DELETE_MEDIA',
             post_uuid: post.id,
             post_id: post.post_id,
+            lock_key: lockKey,
+            lock_owner: ownerId,
             asset_ids: targetAssets.map((a) => a.internal_asset_id),
             assets: targetAssets.map((a) => ({
               asset_uuid: a.id ?? '',
@@ -2221,7 +2227,16 @@ export async function deletePostAndMedia(
 
     await n8nWebhookRequest(
       cfg.workflows.contentPath,
-      { action: 'DELETE_POST', post_id: post.post_id, confirm: true, reason: input.reason ?? '', request_id: requestId },
+      {
+        action: 'DELETE_POST',
+        post_uuid: post.id ?? '',
+        post_id: post.post_id,
+        lock_key: lockKey,
+        lock_owner: ownerId,
+        confirm: true,
+        reason: input.reason ?? '',
+        request_id: requestId,
+      },
       60_000,
       fetchImpl,
     );

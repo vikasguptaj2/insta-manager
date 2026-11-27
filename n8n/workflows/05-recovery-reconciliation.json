@@ -10,7 +10,7 @@
       "name": "WEBHOOK | Recovery Bridge",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
-      "position": [140, 280],
+      "position": [100, 280],
       "parameters": {
         "httpMethod": "POST",
         "path": "instaops-recovery-v1",
@@ -23,9 +23,9 @@
       "name": "CODE | Validate Recovery Operation",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [380, 280],
+      "position": [340, 280],
       "parameters": {
-        "jsCode": "// Safeguard marker: INSTAOPS_V2_RECOVERY — supports CHECK_CONNECTIONS, VERIFY_PUBLICATION (Meta Graph verified), and SAFE_RETRY.\nfunction readCfg(key, fallback) {\n  var blocked = false;\n  try { if (typeof $env !== 'undefined' && $env && $env[key] !== undefined && $env[key] !== null && $env[key] !== '') return { value: String($env[key]), source: 'env', blocked: false }; } catch (_) { blocked = true; }\n  try { if (typeof $vars !== 'undefined' && $vars && $vars[key] !== undefined && $vars[key] !== null && $vars[key] !== '') return { value: String($vars[key]), source: 'vars', blocked: blocked }; } catch (_) {}\n  return { value: fallback || '', source: fallback ? 'default' : 'missing', blocked: blocked };\n}\nfunction safeEqual(a, b) {\n  if (!a || a.length !== b.length) return false;\n  var diff = 0;\n  for (var i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);\n  return diff === 0;\n}\n\nvar item = $input.first().json || {};\nvar headers = item.headers || {};\nvar body = item.body || item;\nvar secretCfg = readCfg('N8N_WEBHOOK_SECRET', '');\nvar sheetCfg = readCfg('GOOGLE_SHEET_ID', '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs');\nvar expected = secretCfg.value;\nvar provided = String(headers['x-dashboard-secret'] || headers['X-Dashboard-Secret'] || '');\nvar action = String(body.action || '').trim().toUpperCase();\n\nvar error = '';\nvar httpStatus = 200;\nif (secretCfg.blocked && !expected) {\n  error = 'n8n $env/secret access denied; configure N8N_BLOCK_ENV_ACCESS_IN_NODE=false or $vars.';\n  httpStatus = 500;\n} else if (!expected || !safeEqual(provided, expected)) {\n  error = 'Unauthorized webhook secret.';\n  httpStatus = 403;\n} else if (['CHECK_CONNECTIONS', 'VERIFY_PUBLICATION', 'SAFE_RETRY'].indexOf(action) === -1) {\n  error = 'Invalid recovery action: ' + action;\n  httpStatus = 400;\n}\n\nreturn [{\n  json: {\n    valid: !error,\n    error: error,\n    httpStatus: httpStatus,\n    action: action,\n    sheet_id: sheetCfg.value,\n    post_uuid: String(body.post_uuid || ''),\n    post_id: String(body.post_id || ''),\n    container_id: String(body.container_id || ''),\n    execution_id: String(body.execution_id || ''),\n    ig_user_id: String(body.ig_user_id || readCfg('INSTAGRAM_USER_ID', '17841453414532595').value),\n    resolution: action === 'SAFE_RETRY' ? 'RESET_DRAFT' : String(body.resolution || 'CHECK_EXECUTION').toUpperCase(),\n    published_id: String(body.published_id || ''),\n    published_url: String(body.published_url || '')\n  }\n}];"
+        "jsCode": "// Safeguard marker: INSTAOPS_V2_RECOVERY — supports CHECK_CONNECTIONS, strict Meta Graph VERIFY_PUBLICATION (no list[0] fallback), and SAFE_RETRY.\nfunction readCfg(key, fallback) {\n  var blocked = false;\n  try { if (typeof $vars !== 'undefined' && $vars && $vars[key] !== undefined && $vars[key] !== null && $vars[key] !== '') return { value: String($vars[key]), source: 'vars', blocked: false }; } catch (_) {}\n  try { if (typeof $env !== 'undefined' && $env && $env[key] !== undefined && $env[key] !== null && $env[key] !== '') return { value: String($env[key]), source: 'env', blocked: false }; } catch (_) { blocked = true; }\n  return { value: fallback || '', source: fallback ? 'default' : 'missing', blocked: blocked };\n}\nfunction safeEqual(a, b) {\n  if (!a || a.length !== b.length) return false;\n  var diff = 0;\n  for (var i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);\n  return diff === 0;\n}\n\nvar item = $input.first().json || {};\nvar headers = item.headers || {};\nvar body = item.body || item;\nvar secretCfg = readCfg('N8N_WEBHOOK_SECRET', '');\nvar livePubCfg = readCfg('LIVE_PUBLISH_ENABLED', 'false');\nvar liveDelCfg = readCfg('LIVE_DELETE_ENABLED', 'false');\nvar schedCfg = readCfg('SCHEDULING_ENABLED', 'false');\nvar sheetCfg = readCfg('GOOGLE_SHEET_ID', '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs');\nvar expected = secretCfg.value;\nvar provided = String(headers['x-dashboard-secret'] || headers['X-Dashboard-Secret'] || '');\nvar action = String(body.action || '').trim().toUpperCase();\n\nvar envBlocked = secretCfg.blocked && !expected;\nvar error = '';\nvar httpStatus = 200;\nif (secretCfg.blocked && !expected) {\n  error = 'n8n $env/secret access denied; configure N8N_BLOCK_ENV_ACCESS_IN_NODE=false or $vars.';\n  httpStatus = 500;\n} else if (!expected || !safeEqual(provided, expected)) {\n  error = 'Unauthorized webhook secret.';\n  httpStatus = 403;\n} else if (['CHECK_CONNECTIONS', 'VERIFY_PUBLICATION', 'SAFE_RETRY'].indexOf(action) === -1) {\n  error = 'Invalid recovery action: ' + action;\n  httpStatus = 400;\n}\n\nreturn [{\n  json: {\n    valid: !error,\n    error: error,\n    httpStatus: httpStatus,\n    action: action,\n    sheet_id: sheetCfg.value,\n    sb_url: readCfg('SUPABASE_URL', 'https://cdgwdlhesgcxmswsamrj.supabase.co').value.replace(/\\/$/, ''),\n    cld_cloud: readCfg('CLOUDINARY_CLOUD_NAME', 'djkkknb9k').value,\n    graph_ver: readCfg('INSTAGRAM_GRAPH_VERSION', 'v22.0').value || 'v22.0',\n    ig_user_id: String(body.ig_user_id || readCfg('INSTAGRAM_USER_ID', '17841453414532595').value),\n    post_uuid: String(body.post_uuid || ''),\n    post_id: String(body.post_id || ''),\n    container_id: String(body.container_id || ''),\n    execution_id: String(body.execution_id || ''),\n    resolution: action === 'SAFE_RETRY' ? 'RESET_DRAFT' : String(body.resolution || 'CHECK_EXECUTION').toUpperCase(),\n    published_id: String(body.published_id || ''),\n    published_url: String(body.published_url || ''),\n    n8nEnv: {\n      ok: !envBlocked,\n      envBlocked: envBlocked,\n      livePublishEnabled: livePubCfg.value.toLowerCase() === 'true',\n      liveDeleteEnabled: liveDelCfg.value.toLowerCase() === 'true',\n      schedulingEnabled: schedCfg.value.toLowerCase() === 'true',\n      detail: envBlocked ? '$env access denied in n8n (set N8N_BLOCK_ENV_ACCESS_IN_NODE=false or use n8n Credentials + $vars)' : 'n8n flags & credentials readable'\n    }\n  }\n}];"
       }
     },
     {
@@ -33,17 +33,15 @@
       "name": "IF | Valid Recovery Auth",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [620, 280],
-      "parameters": {
-        "conditions": { "boolean": [{ "value1": "={{ $json.valid }}", "value2": true }] }
-      }
+      "position": [560, 280],
+      "parameters": { "conditions": { "boolean": [{ "value1": "={{ $json.valid }}", "value2": true }] } }
     },
     {
       "id": "w05-respond-err",
       "name": "RESPOND | Unauthorized",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [860, 440],
+      "position": [800, 460],
       "parameters": {
         "respondWith": "json",
         "responseBody": "={{ JSON.stringify({ ok: false, error: $json.error }) }}",
@@ -55,10 +53,8 @@
       "name": "IF | Is CHECK_CONNECTIONS",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [860, 200],
-      "parameters": {
-        "conditions": { "string": [{ "value1": "={{ $json.action }}", "operation": "equals", "value2": "CHECK_CONNECTIONS" }] }
-      }
+      "position": [800, 200],
+      "parameters": { "conditions": { "string": [{ "value1": "={{ $json.action }}", "operation": "equals", "value2": "CHECK_CONNECTIONS" }] } }
     },
     {
       "id": "w05-check-sheets",
@@ -67,32 +63,389 @@
       "typeVersion": 4.5,
       "alwaysOutputData": true,
       "continueOnFail": true,
-      "position": [1100, 80],
+      "position": [1040, 40],
       "credentials": { "googleSheetsOAuth2Api": { "id": "CONFIGURE_IN_N8N", "name": "Google Sheets OAuth2" } },
       "parameters": {
         "operation": "read",
-        "documentId": { "mode": "id", "value": "={{ $json.sheet_id || $vars.GOOGLE_SHEET_ID || '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs' }}" },
+        "documentId": { "mode": "id", "value": "={{ $('CODE | Validate Recovery Operation').first().json.sheet_id || '19kurWKXLoijsf29tKzedhRHbbg7g9qiSZkcjUszHRhs' }}" },
         "sheetName": { "mode": "name", "value": "Posts" }
       }
     },
     {
-      "id": "w05-summarize-health",
-      "name": "CODE | Run Service & Env Health Probes",
+      "id": "w05-capture-sheets",
+      "name": "CODE | Capture Sheets Probe",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1380, 80],
+      "position": [1260, 40],
       "parameters": {
-        "jsCode": "// Safeguard marker: INSTAOPS_V2_RECOVERY — proves Supabase RPC+RLS+schema via instaops_verify_health_and_rpc, handles empty Google Sheets gracefully, and surfaces n8nEnv diagnostics.\nreturn (async function () {\n  var self = this;\n  function readCfg(key, fallback) {\n    var blocked = false;\n    try { if (typeof $env !== 'undefined' && $env && $env[key] !== undefined && $env[key] !== null && $env[key] !== '') return { value: String($env[key]), source: 'env', blocked: false }; } catch (_) { blocked = true; }\n    try { if (typeof $vars !== 'undefined' && $vars && $vars[key] !== undefined && $vars[key] !== null && $vars[key] !== '') return { value: String($vars[key]), source: 'vars', blocked: blocked }; } catch (_) {}\n    return { value: fallback || '', source: fallback ? 'default' : 'missing', blocked: blocked };\n  }\n  async function httpCall(opts) {\n    if (self && self.helpers && typeof self.helpers.httpRequest === 'function') return await self.helpers.httpRequest(opts);\n    if (typeof fetch === 'function') {\n      var headers = Object.assign({}, opts.headers || {});\n      var body = opts.body !== undefined ? (typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body)) : undefined;\n      if (body && !headers['Content-Type']) headers['Content-Type'] = 'application/json';\n      var res = await fetch(opts.url, { method: opts.method || 'GET', headers: headers, body: body });\n      var text = await res.text();\n      var parsed = text;\n      try { parsed = text ? JSON.parse(text) : {}; } catch (_) {}\n      return { statusCode: res.status, body: parsed, headers: {} };\n    }\n    throw new Error('No HTTP helper available.');\n  }\n\n  var secretCfg = readCfg('N8N_WEBHOOK_SECRET', '');\n  var sbUrlCfg = readCfg('SUPABASE_URL', 'https://cdgwdlhesgcxmswsamrj.supabase.co');\n  var sbKeyCfg = readCfg('SUPABASE_SERVICE_ROLE_KEY', '');\n  var cldNameCfg = readCfg('CLOUDINARY_CLOUD_NAME', 'djkkknb9k');\n  var cldKeyCfg = readCfg('CLOUDINARY_API_KEY', '');\n  var cldSecretCfg = readCfg('CLOUDINARY_API_SECRET', '');\n  var metaTokenCfg = readCfg('META_GRAPH_TOKEN', '');\n  var graphVerCfg = readCfg('INSTAGRAM_GRAPH_VERSION', 'v22.0');\n  var igUserCfg = readCfg('INSTAGRAM_USER_ID', '17841453414532595');\n  var livePubCfg = readCfg('LIVE_PUBLISH_ENABLED', 'false');\n  var liveDelCfg = readCfg('LIVE_DELETE_ENABLED', 'false');\n  var schedCfg = readCfg('SCHEDULING_ENABLED', 'false');\n\n  var envBlocked = [secretCfg, sbKeyCfg, cldKeyCfg, cldSecretCfg, metaTokenCfg, livePubCfg, liveDelCfg, schedCfg].some(function (c) { return c.blocked && c.source === 'missing'; });\n  var n8nEnv = {\n    ok: !envBlocked && Boolean(secretCfg.value && sbKeyCfg.value),\n    envBlocked: envBlocked,\n    livePublishEnabled: livePubCfg.value.toLowerCase() === 'true',\n    liveDeleteEnabled: liveDelCfg.value.toLowerCase() === 'true',\n    schedulingEnabled: schedCfg.value.toLowerCase() === 'true',\n    detail: envBlocked ? '$env access denied in n8n (set N8N_BLOCK_ENV_ACCESS_IN_NODE=false or populate $vars)' : 'n8n secrets and flags readable'\n  };\n\n  // Empty worksheet with alwaysOutputData:true produces 0 items or [{}] — both are healthy reachable sheets!\n  var sheetItems = $input.all();\n  var sheetErr = sheetItems[0] && sheetItems[0].json ? sheetItems[0].json.error : null;\n  var nonEmptyRows = sheetItems.filter(function (it) { return it && it.json && (it.json.post_id || it.json.post_uuid); });\n  var sheetsDiag = {\n    ok: !sheetErr,\n    detail: sheetErr ? String(sheetErr.message || sheetErr) : ('Google Sheets reporting reachable (' + nonEmptyRows.length + ' rows)')\n  };\n\n  var sbDiag = { ok: false, detail: 'Missing SUPABASE_SERVICE_ROLE_KEY' };\n  if (sbKeyCfg.value) {\n    try {\n      var sbRes = await httpCall({\n        method: 'POST',\n        url: sbUrlCfg.value.replace(/\\/$/, '') + '/rest/v1/rpc/instaops_verify_health_and_rpc',\n        headers: { apikey: sbKeyCfg.value, Authorization: 'Bearer ' + sbKeyCfg.value, 'Content-Type': 'application/json' },\n        body: {},\n        json: true, returnFullResponse: true, ignoreHttpStatusErrors: true, timeout: 10000\n      });\n      var sRow = Array.isArray(sbRes.body) ? sbRes.body[0] : sbRes.body;\n      var rpcOk = Boolean(sbRes.statusCode < 300 && sRow && sRow.schema_ok === true && sRow.rls_ok === true && sRow.anon_revoked_ok === true && sRow.atomic_rpc_ok === true);\n      sbDiag = {\n        ok: rpcOk,\n        detail: rpcOk ? ('Supabase RPC, RLS & schema verified (' + String(sRow.detail || 'ok') + ')') : ('Supabase RPC diagnostic failed: ' + String((sRow && (sRow.detail || sRow.message)) || ('HTTP ' + sbRes.statusCode)))\n      };\n    } catch (e) {\n      sbDiag = { ok: false, detail: 'Supabase probe failed: ' + (e && e.message ? e.message : 'network error') };\n    }\n  }\n\n  var cldDiag = { ok: false, detail: 'Missing Cloudinary API credentials in n8n' };\n  if (cldKeyCfg.value && cldSecretCfg.value) {\n    try {\n      var cldAuth = 'Basic ' + Buffer.from(cldKeyCfg.value + ':' + cldSecretCfg.value).toString('base64');\n      var cRes = await httpCall({ method: 'GET', url: 'https://api.cloudinary.com/v1_1/' + encodeURIComponent(cldNameCfg.value) + '/usage', headers: { Authorization: cldAuth }, json: true, returnFullResponse: true, ignoreHttpStatusErrors: true, timeout: 10000 });\n      var cb = cRes.body || {};\n      cldDiag = (cRes.statusCode < 300 && !cb.error)\n        ? { ok: true, detail: 'Plan ' + String(cb.plan || 'Active') + ' (' + String(cb.resources !== undefined ? cb.resources : 0) + ' resources)' }\n        : { ok: false, detail: String((cb.error && cb.error.message) || ('HTTP ' + cRes.statusCode)) };\n    } catch (e) {\n      cldDiag = { ok: false, detail: 'Cloudinary probe failed: ' + (e && e.message ? e.message : 'network error') };\n    }\n  }\n\n  var igDiag = { ok: false, detail: 'Missing META_GRAPH_TOKEN in n8n' };\n  if (metaTokenCfg.value) {\n    try {\n      var iRes = await httpCall({ method: 'GET', url: 'https://graph.facebook.com/' + encodeURIComponent(graphVerCfg.value || 'v22.0') + '/' + encodeURIComponent(igUserCfg.value) + '?fields=id,username', headers: { Authorization: 'Bearer ' + metaTokenCfg.value }, json: true, returnFullResponse: true, ignoreHttpStatusErrors: true, timeout: 10000 });\n      var ib = iRes.body || {};\n      igDiag = (iRes.statusCode < 300 && !ib.error && ib.id)\n        ? { ok: true, detail: 'Verified IG user @' + String(ib.username || ib.id) }\n        : { ok: false, detail: String((ib.error && ib.error.message) || ('HTTP ' + iRes.statusCode)) };\n    } catch (e) {\n      igDiag = { ok: false, detail: 'Instagram Graph probe failed: ' + (e && e.message ? e.message : 'network error') };\n    }\n  }\n\n  return [{ json: { ok: true, services: { supabase: sbDiag, sheets: sheetsDiag, cloudinary: cldDiag, instagram: igDiag, n8nEnv: n8nEnv } } }];\n}).call(this);"
+        "jsCode": "var sheetItems = $input.all();\nvar sheetErr = sheetItems[0] && sheetItems[0].json ? sheetItems[0].json.error : null;\nvar nonEmptyRows = sheetItems.filter(function (it) { return it && it.json && (it.json.post_id || it.json.post_uuid); });\nreturn [{ json: { sheets: { ok: !sheetErr, detail: sheetErr ? String(sheetErr.message || sheetErr) : ('Google Sheets reporting reachable (' + nonEmptyRows.length + ' rows)') } } }];"
       }
     },
     {
-      "id": "w05-reconcile",
-      "name": "CODE | Provider-Verified Reconciliation",
+      "id": "w05-check-supabase",
+      "name": "HTTP | Supabase Health & RPC Self-Test",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "continueOnFail": true,
+      "position": [1480, 40],
+      "credentials": { "httpCustomAuth": { "id": "CONFIGURE_IN_N8N", "name": "InstaOps Supabase Service Role Auth" } },
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('CODE | Validate Recovery Operation').first().json.sb_url + '/rest/v1/rpc/instaops_verify_health_and_rpc' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{}",
+        "options": { "timeout": 10000, "response": { "response": { "fullResponse": true, "neverError": true } } }
+      }
+    },
+    {
+      "id": "w05-check-cld",
+      "name": "HTTP | Probe Cloudinary API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "continueOnFail": true,
+      "position": [1700, 40],
+      "credentials": { "httpBasicAuth": { "id": "CONFIGURE_IN_N8N", "name": "Cloudinary API Key & Secret (Basic Auth)" } },
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://api.cloudinary.com/v1_1/' + encodeURIComponent($('CODE | Validate Recovery Operation').first().json.cld_cloud) + '/usage' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "options": { "timeout": 10000, "response": { "response": { "fullResponse": true, "neverError": true } } }
+      }
+    },
+    {
+      "id": "w05-check-ig",
+      "name": "HTTP | Probe Instagram Business Account",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "continueOnFail": true,
+      "position": [1920, 40],
+      "credentials": { "httpHeaderAuth": { "id": "CONFIGURE_IN_N8N", "name": "Meta Graph API Token Auth" } },
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://graph.facebook.com/' + encodeURIComponent($('CODE | Validate Recovery Operation').first().json.graph_ver) + '/' + encodeURIComponent($('CODE | Validate Recovery Operation').first().json.ig_user_id) + '?fields=id,username' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": { "timeout": 10000, "response": { "response": { "fullResponse": true, "neverError": true } } }
+      }
+    },
+    {
+      "id": "w05-assemble-health",
+      "name": "CODE | Build Service Health Matrix",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1120, 300],
+      "position": [2140, 40],
       "parameters": {
-        "jsCode": "// Safeguard marker: INSTAOPS_V2_RECOVERY — refuses client-supplied PUBLISHED claims without live Meta Graph API verification.\nreturn (async function () {\n  var self = this;\n  function readCfg(key, fallback) {\n    var blocked = false;\n    try { if (typeof $env !== 'undefined' && $env && $env[key] !== undefined && $env[key] !== null && $env[key] !== '') return { value: String($env[key]), source: 'env', blocked: false }; } catch (_) { blocked = true; }\n    try { if (typeof $vars !== 'undefined' && $vars && $vars[key] !== undefined && $vars[key] !== null && $vars[key] !== '') return { value: String($vars[key]), source: 'vars', blocked: blocked }; } catch (_) {}\n    return { value: fallback || '', source: fallback ? 'default' : 'missing', blocked: blocked };\n  }\n  async function httpCall(opts) {\n    if (self && self.helpers && typeof self.helpers.httpRequest === 'function') return await self.helpers.httpRequest(opts);\n    if (typeof fetch === 'function') {\n      var headers = Object.assign({}, opts.headers || {});\n      var body = opts.body !== undefined ? (typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body)) : undefined;\n      if (body && !headers['Content-Type']) headers['Content-Type'] = 'application/json';\n      var res = await fetch(opts.url, { method: opts.method || 'GET', headers: headers, body: body });\n      var text = await res.text();\n      var parsed = text;\n      try { parsed = text ? JSON.parse(text) : {}; } catch (_) {}\n      return { statusCode: res.status, body: parsed, headers: {} };\n    }\n    throw new Error('No HTTP helper available.');\n  }\n\n  var req = $('CODE | Validate Recovery Operation').item.json;\n  var sbUrlCfg = readCfg('SUPABASE_URL', 'https://cdgwdlhesgcxmswsamrj.supabase.co');\n  var sbKeyCfg = readCfg('SUPABASE_SERVICE_ROLE_KEY', '');\n  var metaTokenCfg = readCfg('META_GRAPH_TOKEN', '');\n  var graphVer = readCfg('INSTAGRAM_GRAPH_VERSION', 'v22.0').value || 'v22.0';\n\n  if (!sbKeyCfg.value) {\n    return [{ json: { ok: false, verified: false, error: sbKeyCfg.blocked ? 'n8n $env/secret access denied; configure N8N_BLOCK_ENV_ACCESS_IN_NODE=false or $vars.' : 'Missing SUPABASE_SERVICE_ROLE_KEY.' } }];\n  }\n  var sbUrl = sbUrlCfg.value.replace(/\\/$/, '');\n  var sbHeaders = { apikey: sbKeyCfg.value, Authorization: 'Bearer ' + sbKeyCfg.value, 'Content-Type': 'application/json' };\n  var filter = req.post_uuid ? ('id=eq.' + encodeURIComponent(req.post_uuid)) : ('post_id=eq.' + encodeURIComponent(req.post_id));\n  var pRes = await httpCall({ method: 'GET', url: sbUrl + '/rest/v1/instaops_posts?' + filter + '&select=*', headers: sbHeaders, json: true, returnFullResponse: true, ignoreHttpStatusErrors: true, timeout: 15000 });\n  var row = Array.isArray(pRes.body) ? pRes.body[0] : null;\n  if (!row) {\n    return [{ json: { ok: false, verified: false, error: 'Post not found for reconciliation.' } }];\n  }\n  var now = new Date().toISOString();\n  var resolution = String(req.resolution || 'CHECK_EXECUTION').toUpperCase();\n\n  if (resolution === 'MARK_PUBLISHED' || resolution === 'CHECK_EXECUTION') {\n    if (!metaTokenCfg.value) {\n      return [{ json: { ok: false, verified: false, status: row.status || 'VERIFY_MANUALLY', error: metaTokenCfg.blocked ? 'n8n $env access denied for META_GRAPH_TOKEN.' : 'META_GRAPH_TOKEN is required to verify publication against Instagram Graph API.' } }];\n    }\n    var candidateId = String(req.published_id || row.published_id || '').trim();\n    var containerId = String(req.container_id || row.container_id || '').trim();\n    var verifiedId = '';\n    var verifiedUrl = '';\n    var verified = false;\n\n    if (candidateId) {\n      var mRes = await httpCall({ method: 'GET', url: 'https://graph.facebook.com/' + encodeURIComponent(graphVer) + '/' + encodeURIComponent(candidateId) + '?fields=id,permalink,media_type,timestamp', headers: { Authorization: 'Bearer ' + metaTokenCfg.value }, json: true, returnFullResponse: true, ignoreHttpStatusErrors: true, timeout: 15000 });\n      var mb = mRes.body || {};\n      if (mRes.statusCode < 300 && !mb.error && mb.id && String(mb.id) === candidateId) {\n        verified = true;\n        verifiedId = String(mb.id);\n        verifiedUrl = String(mb.permalink || '');\n      }\n    } else if (containerId) {\n      var cRes = await httpCall({ method: 'GET', url: 'https://graph.facebook.com/' + encodeURIComponent(graphVer) + '/' + encodeURIComponent(containerId) + '?fields=id,status_code,status', headers: { Authorization: 'Bearer ' + metaTokenCfg.value }, json: true, returnFullResponse: true, ignoreHttpStatusErrors: true, timeout: 15000 });\n      var cb = cRes.body || {};\n      if (cRes.statusCode < 300 && !cb.error && String(cb.status_code || '').toUpperCase() === 'PUBLISHED') {\n        var feedRes = await httpCall({ method: 'GET', url: 'https://graph.facebook.com/' + encodeURIComponent(graphVer) + '/' + encodeURIComponent(row.ig_user_id || req.ig_user_id) + '/media?fields=id,permalink,caption,timestamp&limit=10', headers: { Authorization: 'Bearer ' + metaTokenCfg.value }, json: true, returnFullResponse: true, ignoreHttpStatusErrors: true, timeout: 15000 });\n        var list = feedRes.body && Array.isArray(feedRes.body.data) ? feedRes.body.data : [];\n        var targetCaption = String(row.caption || row.original_caption || '').trim();\n        var found = list.find(function (m) { return targetCaption ? String(m.caption || '').trim() === targetCaption : true; }) || list[0];\n        if (found && found.id) {\n          verified = true;\n          verifiedId = String(found.id);\n          verifiedUrl = String(found.permalink || '');\n        }\n      }\n    }\n\n    if (!verified || !verifiedId) {\n      return [{ json: { ok: true, verified: false, post_uuid: row.id, post_id: row.post_id, status: row.status || 'VERIFY_MANUALLY', error: 'Meta Graph API could not verify published media ID or container; refusing unverified MARK_PUBLISHED.' } }];\n    }\n\n    await httpCall({ method: 'PATCH', url: sbUrl + '/rest/v1/instaops_posts?id=eq.' + encodeURIComponent(row.id), headers: sbHeaders, body: { status: 'PUBLISHED', published_id: verifiedId, published_url: verifiedUrl || row.published_url || '', published_at: row.published_at || now, error: '', error_code: '', error_stage: '', sheets_sync_status: 'PENDING' }, json: true, returnFullResponse: true, ignoreHttpStatusErrors: true });\n    await httpCall({ method: 'DELETE', url: sbUrl + '/rest/v1/instaops_job_locks?lock_key=eq.' + encodeURIComponent('post:' + row.id), headers: sbHeaders, json: true, returnFullResponse: true, ignoreHttpStatusErrors: true });\n    return [{ json: { ok: true, verified: true, post_uuid: row.id, post_id: row.post_id, status: 'PUBLISHED', published_id: verifiedId, published_url: verifiedUrl } }];\n  }\n\n  if (row.status === 'PUBLISHED' || (row.published_id && String(row.published_id).trim() !== '')) {\n    return [{ json: { ok: false, verified: false, error: 'Already PUBLISHED post cannot be reset via recovery.' } }];\n  }\n  var nextStatus = resolution === 'MARK_FAILED' ? 'FAILED' : (row.media_url ? 'READY' : 'DRAFT');\n  var patch = {\n    status: nextStatus,\n    error: nextStatus === 'READY' || nextStatus === 'DRAFT' ? '' : (row.error || ''),\n    error_code: nextStatus === 'READY' || nextStatus === 'DRAFT' ? '' : (row.error_code || ''),\n    sheets_sync_status: 'PENDING'\n  };\n  await httpCall({ method: 'PATCH', url: sbUrl + '/rest/v1/instaops_posts?id=eq.' + encodeURIComponent(row.id), headers: sbHeaders, body: patch, json: true, returnFullResponse: true, ignoreHttpStatusErrors: true });\n  if (resolution === 'RELEASE_LOCK' || resolution === 'RESET_DRAFT' || resolution === 'MARK_READY' || resolution === 'MARK_FAILED') {\n    await httpCall({ method: 'DELETE', url: sbUrl + '/rest/v1/instaops_job_locks?lock_key=eq.' + encodeURIComponent('post:' + row.id), headers: sbHeaders, json: true, returnFullResponse: true, ignoreHttpStatusErrors: true });\n  }\n  return [{ json: { ok: true, verified: false, post_uuid: row.id, post_id: row.post_id, status: nextStatus } }];\n}).call(this);"
+        "jsCode": "function unpack(raw) {\n  var r = raw || {};\n  if (r.error && r.statusCode === undefined) return { ok: false, sc: 0, body: {}, err: String(r.error.message || r.error) };\n  var sc = r.statusCode !== undefined ? Number(r.statusCode) : 200;\n  var b = r.body !== undefined ? r.body : r;\n  if (typeof b === 'string') { try { b = JSON.parse(b); } catch (_) { b = {}; } }\n  return { ok: sc >= 200 && sc < 300, sc: sc, body: b || {}, err: '' };\n}\n\nvar req = $('CODE | Validate Recovery Operation').first().json;\nvar sheets = ($('CODE | Capture Sheets Probe').first().json || {}).sheets || { ok: false, detail: 'Sheets probe did not run' };\n\nvar sbU = unpack($('HTTP | Supabase Health & RPC Self-Test').first().json);\nvar sRow = Array.isArray(sbU.body) ? sbU.body[0] : sbU.body;\nvar rpcOk = Boolean(sbU.ok && sRow && sRow.schema_ok === true && sRow.rls_ok === true && sRow.anon_revoked_ok === true && sRow.atomic_rpc_ok === true);\nvar supabase = {\n  ok: rpcOk,\n  detail: rpcOk ? ('Supabase RPC, RLS & schema verified (' + String(sRow.detail || 'ok') + ')') : ('Supabase RPC diagnostic failed: ' + (sbU.err || String((sRow && (sRow.detail || sRow.message)) || ('HTTP ' + sbU.sc))))\n};\n\nvar cldU = unpack($('HTTP | Probe Cloudinary API').first().json);\nvar cb = cldU.body || {};\nvar cloudinary = (cldU.ok && !cb.error)\n  ? { ok: true, detail: 'Plan ' + String(cb.plan || 'Active') + ' (' + String(cb.resources !== undefined ? cb.resources : 0) + ' resources)' }\n  : { ok: false, detail: cldU.err || String((cb.error && cb.error.message) || ('HTTP ' + cldU.sc)) };\n\nvar igU = unpack($input.first().json);\nvar ib = igU.body || {};\nvar instagram = (igU.ok && !ib.error && ib.id)\n  ? { ok: true, detail: 'Verified IG user @' + String(ib.username || ib.id) }\n  : { ok: false, detail: igU.err || String((ib.error && ib.error.message) || ('HTTP ' + igU.sc)) };\n\nreturn [{ json: { ok: true, services: { supabase: supabase, sheets: sheets, cloudinary: cloudinary, instagram: instagram, n8nEnv: req.n8nEnv } } }];"
+      }
+    },
+    {
+      "id": "w05-read-post",
+      "name": "HTTP | Read Post For Reconciliation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "continueOnFail": true,
+      "position": [1040, 320],
+      "credentials": { "httpCustomAuth": { "id": "CONFIGURE_IN_N8N", "name": "InstaOps Supabase Service Role Auth" } },
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('CODE | Validate Recovery Operation').first().json.sb_url + '/rest/v1/instaops_posts?' + ($('CODE | Validate Recovery Operation').first().json.post_uuid ? ('id=eq.' + encodeURIComponent($('CODE | Validate Recovery Operation').first().json.post_uuid)) : ('post_id=eq.' + encodeURIComponent($('CODE | Validate Recovery Operation').first().json.post_id))) + '&select=*' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "options": { "timeout": 15000, "response": { "response": { "fullResponse": true, "neverError": true } } }
+      }
+    },
+    {
+      "id": "w05-route-reconcile",
+      "name": "CODE | Route Reconciliation Mode",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1260, 320],
+      "parameters": {
+        "jsCode": "var req = $('CODE | Validate Recovery Operation').first().json;\nvar raw = $input.first().json || {};\nvar body = raw.body !== undefined ? raw.body : raw;\nvar row = Array.isArray(body) ? body[0] : body;\nif (!row || !row.id) {\n  return [{ json: { mode: 'ERROR', result: { ok: false, verified: false, error: 'Post not found for reconciliation.' } } }];\n}\nvar res = String(req.resolution || 'CHECK_EXECUTION').toUpperCase();\nif (res === 'MARK_PUBLISHED' || res === 'CHECK_EXECUTION') {\n  return [{ json: { mode: 'VERIFY_PROVIDER', row: row, dest_ig_user_id: String(row.ig_user_id || req.ig_user_id), candidate_id: String(req.published_id || row.published_id || '').trim(), container_id: String(req.container_id || row.container_id || '').trim() } }];\n}\nif (row.status === 'PUBLISHED' || (row.published_id && String(row.published_id).trim() !== '')) {\n  return [{ json: { mode: 'ERROR', result: { ok: false, verified: false, error: 'Already PUBLISHED post cannot be reset via recovery.' } } }];\n}\nvar nextStatus = res === 'MARK_FAILED' ? 'FAILED' : (row.media_url ? 'READY' : 'DRAFT');\nvar clearErr = nextStatus === 'READY' || nextStatus === 'DRAFT';\nreturn [{\n  json: {\n    mode: 'RESET',\n    row: row,\n    next_status: nextStatus,\n    release_lock: res === 'RELEASE_LOCK' || res === 'RESET_DRAFT' || res === 'MARK_READY' || res === 'MARK_FAILED',\n    patch: {\n      status: nextStatus,\n      error: clearErr ? '' : (row.error || ''),\n      error_code: clearErr ? '' : (row.error_code || ''),\n      sheets_sync_status: 'PENDING'\n    }\n  }\n}];"
+      }
+    },
+    {
+      "id": "w05-switch-mode",
+      "name": "SWITCH | Reconcile Mode",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [1480, 320],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "outputKey": "VERIFY_PROVIDER",
+              "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $json.mode }}", "rightValue": "VERIFY_PROVIDER", "operator": { "type": "string", "operation": "equals" } }] }
+            },
+            {
+              "outputKey": "RESET",
+              "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $json.mode }}", "rightValue": "RESET", "operator": { "type": "string", "operation": "equals" } }] }
+            }
+          ]
+        },
+        "options": { "fallbackOutput": "extra" }
+      }
+    },
+    {
+      "id": "w05-err-passthru",
+      "name": "CODE | Reconciliation Reject Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1740, 540],
+      "parameters": { "jsCode": "return [{ json: ($input.first().json || {}).result || { ok: false, verified: false, error: 'Reconciliation error' } }];" }
+    },
+    {
+      "id": "w05-patch-reset",
+      "name": "HTTP | Save Reset Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "continueOnFail": true,
+      "position": [1740, 420],
+      "credentials": { "httpCustomAuth": { "id": "CONFIGURE_IN_N8N", "name": "InstaOps Supabase Service Role Auth" } },
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('CODE | Validate Recovery Operation').first().json.sb_url + '/rest/v1/instaops_posts?id=eq.' + encodeURIComponent($json.row.id) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.patch) }}",
+        "options": { "timeout": 15000, "response": { "response": { "fullResponse": true, "neverError": true } } }
+      }
+    },
+    {
+      "id": "w05-del-lock-reset",
+      "name": "HTTP | Clear Lock On Reset",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "continueOnFail": true,
+      "position": [1960, 420],
+      "credentials": { "httpCustomAuth": { "id": "CONFIGURE_IN_N8N", "name": "InstaOps Supabase Service Role Auth" } },
+      "parameters": {
+        "method": "DELETE",
+        "url": "={{ $('CODE | Validate Recovery Operation').first().json.sb_url + '/rest/v1/instaops_job_locks?lock_key=eq.' + encodeURIComponent('post:' + $('CODE | Route Reconciliation Mode').first().json.row.id) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "options": { "timeout": 15000, "response": { "response": { "fullResponse": true, "neverError": true } } }
+      }
+    },
+    {
+      "id": "w05-fmt-reset",
+      "name": "CODE | Format Reset Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2180, 420],
+      "parameters": {
+        "jsCode": "var r = $('CODE | Route Reconciliation Mode').first().json;\nreturn [{ json: { ok: true, verified: false, post_uuid: r.row.id, post_id: r.row.post_id, status: r.next_status } }];"
+      }
+    },
+    {
+      "id": "w05-read-acct",
+      "name": "HTTP | Read Destination Account",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "continueOnFail": true,
+      "position": [1740, 220],
+      "credentials": { "httpCustomAuth": { "id": "CONFIGURE_IN_N8N", "name": "InstaOps Supabase Service Role Auth" } },
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('CODE | Validate Recovery Operation').first().json.sb_url + '/rest/v1/instaops_accounts?ig_user_id=eq.' + encodeURIComponent($json.dest_ig_user_id) + '&limit=1' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "options": { "timeout": 15000, "response": { "response": { "fullResponse": true, "neverError": true } } }
+      }
+    },
+    {
+      "id": "w05-probe-dest-ig",
+      "name": "HTTP | Graph Verify Destination Account Identity",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "continueOnFail": true,
+      "position": [1960, 220],
+      "credentials": { "httpHeaderAuth": { "id": "CONFIGURE_IN_N8N", "name": "Meta Graph API Token Auth" } },
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://graph.facebook.com/' + encodeURIComponent($('CODE | Validate Recovery Operation').first().json.graph_ver) + '/' + encodeURIComponent($('CODE | Route Reconciliation Mode').first().json.dest_ig_user_id) + '?fields=id,username' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": { "timeout": 15000, "response": { "response": { "fullResponse": true, "neverError": true } } }
+      }
+    },
+    {
+      "id": "w05-if-candidate",
+      "name": "IF | Has Candidate Published ID",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2180, 220],
+      "parameters": {
+        "conditions": { "boolean": [{ "value1": "={{ Boolean($('CODE | Route Reconciliation Mode').first().json.candidate_id) }}", "value2": true }] }
+      }
+    },
+    {
+      "id": "w05-graph-media",
+      "name": "HTTP | Graph Verify Candidate Media",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "continueOnFail": true,
+      "position": [2420, 140],
+      "credentials": { "httpHeaderAuth": { "id": "CONFIGURE_IN_N8N", "name": "Meta Graph API Token Auth" } },
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://graph.facebook.com/' + encodeURIComponent($('CODE | Validate Recovery Operation').first().json.graph_ver) + '/' + encodeURIComponent($('CODE | Route Reconciliation Mode').first().json.candidate_id) + '?fields=id,permalink,media_type,media_product_type,caption,timestamp,username,owner{id}' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": { "timeout": 15000, "response": { "response": { "fullResponse": true, "neverError": true } } }
+      }
+    },
+    {
+      "id": "w05-dup-check-cand",
+      "name": "HTTP | Supabase Check Duplicate Published ID",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "continueOnFail": true,
+      "position": [2640, 140],
+      "credentials": { "httpCustomAuth": { "id": "CONFIGURE_IN_N8N", "name": "InstaOps Supabase Service Role Auth" } },
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('CODE | Validate Recovery Operation').first().json.sb_url + '/rest/v1/instaops_posts?published_id=eq.' + encodeURIComponent($('CODE | Route Reconciliation Mode').first().json.candidate_id) + '&select=id,post_id' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "options": { "timeout": 15000, "response": { "response": { "fullResponse": true, "neverError": true } } }
+      }
+    },
+    {
+      "id": "w05-eval-candidate",
+      "name": "CODE | Validate Explicit Published Media",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2860, 140],
+      "parameters": {
+        "jsCode": "function unpack(raw) {\n  var r = raw || {};\n  if (r.error && r.statusCode === undefined) return { ok: false, body: {} };\n  var sc = r.statusCode !== undefined ? Number(r.statusCode) : 200;\n  var b = r.body !== undefined ? r.body : r;\n  if (typeof b === 'string') { try { b = JSON.parse(b); } catch (_) { b = {}; } }\n  return { ok: sc >= 200 && sc < 300, body: b || {} };\n}\nfunction mediaTypeMatches(postMt, igMt) {\n  var p = String(postMt || '').toUpperCase();\n  var g = String(igMt || '').toUpperCase();\n  if (!g) return true;\n  if (p === 'CAROUSEL') return g === 'CAROUSEL_ALBUM' || g === 'CAROUSEL';\n  if (p === 'REEL') return g === 'VIDEO' || g === 'REELS';\n  if (p === 'IMAGE') return g === 'IMAGE';\n  return true;\n}\n\nvar route = $('CODE | Route Reconciliation Mode').first().json;\nvar row = route.row;\nvar candId = route.candidate_id;\nvar destId = route.dest_ig_user_id;\n\nvar acctU = unpack($('HTTP | Read Destination Account').first().json);\nvar acct = Array.isArray(acctU.body) ? acctU.body[0] : acctU.body;\nvar igAcctU = unpack($('HTTP | Graph Verify Destination Account Identity').first().json);\nvar medU = unpack($('HTTP | Graph Verify Candidate Media').first().json);\nvar dupU = unpack($('HTTP | Supabase Check Duplicate Published ID').first().json);\nvar dupRows = Array.isArray(dupU.body) ? dupU.body : [];\nvar dupConflict = dupRows.some(function (d) { return d && d.id && d.id !== row.id; });\n\nvar mb = medU.body || {};\nvar igAcct = igAcctU.body || {};\nvar ownerMatch = !mb.owner || !mb.owner.id || String(mb.owner.id) === destId;\nvar acctOk = Boolean(acct && acct.enabled === true && igAcctU.ok && String(igAcct.id) === destId);\nvar usernameMatch = !mb.username || !igAcct.username || String(mb.username).toLowerCase() === String(igAcct.username).toLowerCase();\nvar typeOk = mediaTypeMatches(row.media_type, mb.media_type);\n\nvar verified = Boolean(acctOk && medU.ok && !mb.error && mb.id && String(mb.id) === candId && ownerMatch && usernameMatch && typeOk && !dupConflict);\nif (!verified) {\n  var why = !acctOk ? 'Destination account verification failed' : dupConflict ? 'published_id already belongs to a different post' : !ownerMatch || !usernameMatch ? 'Media owner does not match destination Instagram account' : !typeOk ? 'Media type mismatch with target post' : 'Meta Graph API could not verify candidate published_id; retaining VERIFY_MANUALLY.';\n  return [{ json: { verified: false, row: row, result: { ok: true, verified: false, post_uuid: row.id, post_id: row.post_id, status: 'VERIFY_MANUALLY', error: why } } }];\n}\nreturn [{ json: { verified: true, row: row, verified_id: String(mb.id), verified_url: String(mb.permalink || '') } }];"
+      }
+    },
+    {
+      "id": "w05-graph-container",
+      "name": "HTTP | Graph Check Container Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "continueOnFail": true,
+      "position": [2420, 300],
+      "credentials": { "httpHeaderAuth": { "id": "CONFIGURE_IN_N8N", "name": "Meta Graph API Token Auth" } },
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://graph.facebook.com/' + encodeURIComponent($('CODE | Validate Recovery Operation').first().json.graph_ver) + '/' + encodeURIComponent($('CODE | Route Reconciliation Mode').first().json.container_id || 'missing') + '?fields=id,status_code,status' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": { "timeout": 15000, "response": { "response": { "fullResponse": true, "neverError": true } } }
+      }
+    },
+    {
+      "id": "w05-graph-feed",
+      "name": "HTTP | Graph Fetch Recent IG Media",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "continueOnFail": true,
+      "position": [2640, 300],
+      "credentials": { "httpHeaderAuth": { "id": "CONFIGURE_IN_N8N", "name": "Meta Graph API Token Auth" } },
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://graph.facebook.com/' + encodeURIComponent($('CODE | Validate Recovery Operation').first().json.graph_ver) + '/' + encodeURIComponent($('CODE | Route Reconciliation Mode').first().json.dest_ig_user_id) + '/media?fields=id,permalink,caption,media_type,media_product_type,timestamp&limit=25' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": { "timeout": 15000, "response": { "response": { "fullResponse": true, "neverError": true } } }
+      }
+    },
+    {
+      "id": "w05-supabase-recent-pub",
+      "name": "HTTP | Supabase Read Existing Published IDs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "continueOnFail": true,
+      "position": [2860, 300],
+      "credentials": { "httpCustomAuth": { "id": "CONFIGURE_IN_N8N", "name": "InstaOps Supabase Service Role Auth" } },
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('CODE | Validate Recovery Operation').first().json.sb_url + '/rest/v1/instaops_posts?published_id=neq.&select=id,published_id' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "options": { "timeout": 15000, "response": { "response": { "fullResponse": true, "neverError": true } } }
+      }
+    },
+    {
+      "id": "w05-eval-container",
+      "name": "CODE | Strict Container & Publication Match",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3080, 300],
+      "parameters": {
+        "jsCode": "// STRICT MATCH ONLY: never uses list[0] fallback or empty-caption wildcards; retains VERIFY_MANUALLY unless an exact unambiguous 1-of-1 match is proven.\nfunction unpack(raw) {\n  var r = raw || {};\n  if (r.error && r.statusCode === undefined) return { ok: false, body: {} };\n  var sc = r.statusCode !== undefined ? Number(r.statusCode) : 200;\n  var b = r.body !== undefined ? r.body : r;\n  if (typeof b === 'string') { try { b = JSON.parse(b); } catch (_) { b = {}; } }\n  return { ok: sc >= 200 && sc < 300, body: b || {} };\n}\nfunction mediaTypeMatches(postMt, igMt) {\n  var p = String(postMt || '').toUpperCase();\n  var g = String(igMt || '').toUpperCase();\n  if (p === 'CAROUSEL') return g === 'CAROUSEL_ALBUM' || g === 'CAROUSEL';\n  if (p === 'REEL') return g === 'VIDEO' || g === 'REELS';\n  if (p === 'IMAGE') return g === 'IMAGE';\n  return false;\n}\n\nvar route = $('CODE | Route Reconciliation Mode').first().json;\nvar row = route.row;\nvar destId = route.dest_ig_user_id;\n\nvar acctU = unpack($('HTTP | Read Destination Account').first().json);\nvar acct = Array.isArray(acctU.body) ? acctU.body[0] : acctU.body;\nvar igAcctU = unpack($('HTTP | Graph Verify Destination Account Identity').first().json);\nvar igAcct = igAcctU.body || {};\nvar acctOk = Boolean(acct && acct.enabled === true && igAcctU.ok && String(igAcct.id) === destId);\n\nif (!acctOk) {\n  return [{ json: { verified: false, row: row, result: { ok: true, verified: false, post_uuid: row.id, post_id: row.post_id, status: 'VERIFY_MANUALLY', error: 'Destination Instagram account verification failed; retaining VERIFY_MANUALLY.' } } }];\n}\n\nif (!route.container_id) {\n  return [{ json: { verified: false, row: row, result: { ok: true, verified: false, post_uuid: row.id, post_id: row.post_id, status: 'VERIFY_MANUALLY', error: 'Missing container_id and published_id; cannot verify publication unambiguously.' } } }];\n}\n\nvar contU = unpack($('HTTP | Graph Check Container Status').first().json);\nvar cb = contU.body || {};\nif (!contU.ok || cb.error || String(cb.status_code || '').toUpperCase() !== 'PUBLISHED') {\n  return [{ json: { verified: false, row: row, result: { ok: true, verified: false, post_uuid: row.id, post_id: row.post_id, status: 'VERIFY_MANUALLY', error: 'Container status is not PUBLISHED; retaining VERIFY_MANUALLY.' } } }];\n}\n\nvar targetCaption = String(row.caption || row.original_caption || '').trim();\nif (!targetCaption) {\n  return [{ json: { verified: false, row: row, result: { ok: true, verified: false, post_uuid: row.id, post_id: row.post_id, status: 'VERIFY_MANUALLY', error: 'Empty caption cannot be matched unambiguously from feed without published_id; retaining VERIFY_MANUALLY.' } } }];\n}\n\nvar feedU = unpack($('HTTP | Graph Fetch Recent IG Media').first().json);\nvar feedList = feedU.ok && feedU.body && Array.isArray(feedU.body.data) ? feedU.body.data : [];\nvar usedU = unpack($input.first().json);\nvar usedRows = Array.isArray(usedU.body) ? usedU.body : [];\nvar usedMap = {};\nfor (var ui = 0; ui < usedRows.length; ui++) {\n  if (usedRows[ui] && usedRows[ui].published_id && usedRows[ui].id !== row.id) {\n    usedMap[String(usedRows[ui].published_id)] = true;\n  }\n}\n\nvar minTsMs = row.created_at ? (Date.parse(String(row.created_at)) - 300000) : 0;\nvar matches = feedList.filter(function (m) {\n  if (!m || !m.id || usedMap[String(m.id)]) return false;\n  if (String(m.caption || '').trim() !== targetCaption) return false;\n  if (!mediaTypeMatches(row.media_type, m.media_type)) return false;\n  if (minTsMs > 0 && m.timestamp) {\n    var mts = Date.parse(String(m.timestamp));\n    if (Number.isFinite(mts) && mts < minTsMs) return false;\n  }\n  return true;\n});\n\nif (matches.length !== 1) {\n  return [{ json: { verified: false, row: row, result: { ok: true, verified: false, post_uuid: row.id, post_id: row.post_id, status: 'VERIFY_MANUALLY', error: 'Expected exact 1-of-1 unambiguous publication match on Meta Graph, found ' + matches.length + '; retaining VERIFY_MANUALLY.' } } }];\n}\n\nvar matched = matches[0];\nreturn [{ json: { verified: true, row: row, verified_id: String(matched.id), verified_url: String(matched.permalink || '') } }];"
+      }
+    },
+    {
+      "id": "w05-if-verified",
+      "name": "IF | Publication Verified Unambiguously",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [3320, 220],
+      "parameters": { "conditions": { "boolean": [{ "value1": "={{ $json.verified }}", "value2": true }] } }
+    },
+    {
+      "id": "w05-save-published",
+      "name": "HTTP | Save Verified PUBLISHED",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "continueOnFail": true,
+      "position": [3560, 140],
+      "credentials": { "httpCustomAuth": { "id": "CONFIGURE_IN_N8N", "name": "InstaOps Supabase Service Role Auth" } },
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $('CODE | Validate Recovery Operation').first().json.sb_url + '/rest/v1/instaops_posts?id=eq.' + encodeURIComponent($json.row.id) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ status: 'PUBLISHED', published_id: $json.verified_id, published_url: $json.verified_url || $json.row.published_url || '', published_at: $json.row.published_at || new Date().toISOString(), error: '', error_code: '', error_stage: '', sheets_sync_status: 'PENDING' }) }}",
+        "options": { "timeout": 15000, "response": { "response": { "fullResponse": true, "neverError": true } } }
+      }
+    },
+    {
+      "id": "w05-release-lock-pub",
+      "name": "HTTP | Clear Lock On Verified Published",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "continueOnFail": true,
+      "position": [3780, 140],
+      "credentials": { "httpCustomAuth": { "id": "CONFIGURE_IN_N8N", "name": "InstaOps Supabase Service Role Auth" } },
+      "parameters": {
+        "method": "DELETE",
+        "url": "={{ $('CODE | Validate Recovery Operation').first().json.sb_url + '/rest/v1/instaops_job_locks?lock_key=eq.' + encodeURIComponent('post:' + $('IF | Publication Verified Unambiguously').last().json.row.id) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "options": { "timeout": 15000, "response": { "response": { "fullResponse": true, "neverError": true } } }
+      }
+    },
+    {
+      "id": "w05-fmt-verified",
+      "name": "CODE | Format Verified Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4000, 140],
+      "parameters": {
+        "jsCode": "var prev = $('IF | Publication Verified Unambiguously').last().json;\nreturn [{ json: { ok: true, verified: true, post_uuid: prev.row.id, post_id: prev.row.post_id, status: 'PUBLISHED', published_id: prev.verified_id, published_url: prev.verified_url } }];"
+      }
+    },
+    {
+      "id": "w05-fmt-unverified",
+      "name": "CODE | Retain VERIFY_MANUALLY Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3560, 300],
+      "parameters": {
+        "jsCode": "var res = ($input.first().json || {}).result || { ok: true, verified: false, status: 'VERIFY_MANUALLY', error: 'Unverified publication; retained VERIFY_MANUALLY.' };\nreturn [{ json: res }];"
       }
     },
     {
@@ -100,7 +453,7 @@
       "name": "RESPOND | Recovery Result",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [1660, 180],
+      "position": [4260, 200],
       "parameters": {
         "respondWith": "json",
         "responseBody": "={{ JSON.stringify($json) }}",
@@ -120,11 +473,52 @@
     "IF | Is CHECK_CONNECTIONS": {
       "main": [
         [{ "node": "SHEETS | Probe Posts Sheet", "type": "main", "index": 0 }],
-        [{ "node": "CODE | Provider-Verified Reconciliation", "type": "main", "index": 0 }]
+        [{ "node": "HTTP | Read Post For Reconciliation", "type": "main", "index": 0 }]
       ]
     },
-    "SHEETS | Probe Posts Sheet": { "main": [[{ "node": "CODE | Run Service & Env Health Probes", "type": "main", "index": 0 }]] },
-    "CODE | Run Service & Env Health Probes": { "main": [[{ "node": "RESPOND | Recovery Result", "type": "main", "index": 0 }]] },
-    "CODE | Provider-Verified Reconciliation": { "main": [[{ "node": "RESPOND | Recovery Result", "type": "main", "index": 0 }]] }
+    "SHEETS | Probe Posts Sheet": { "main": [[{ "node": "CODE | Capture Sheets Probe", "type": "main", "index": 0 }]] },
+    "CODE | Capture Sheets Probe": { "main": [[{ "node": "HTTP | Supabase Health & RPC Self-Test", "type": "main", "index": 0 }]] },
+    "HTTP | Supabase Health & RPC Self-Test": { "main": [[{ "node": "HTTP | Probe Cloudinary API", "type": "main", "index": 0 }]] },
+    "HTTP | Probe Cloudinary API": { "main": [[{ "node": "HTTP | Probe Instagram Business Account", "type": "main", "index": 0 }]] },
+    "HTTP | Probe Instagram Business Account": { "main": [[{ "node": "CODE | Build Service Health Matrix", "type": "main", "index": 0 }]] },
+    "CODE | Build Service Health Matrix": { "main": [[{ "node": "RESPOND | Recovery Result", "type": "main", "index": 0 }]] },
+    "HTTP | Read Post For Reconciliation": { "main": [[{ "node": "CODE | Route Reconciliation Mode", "type": "main", "index": 0 }]] },
+    "CODE | Route Reconciliation Mode": { "main": [[{ "node": "SWITCH | Reconcile Mode", "type": "main", "index": 0 }]] },
+    "SWITCH | Reconcile Mode": {
+      "main": [
+        [{ "node": "HTTP | Read Destination Account", "type": "main", "index": 0 }],
+        [{ "node": "HTTP | Save Reset Status", "type": "main", "index": 0 }],
+        [{ "node": "CODE | Reconciliation Reject Payload", "type": "main", "index": 0 }]
+      ]
+    },
+    "CODE | Reconciliation Reject Payload": { "main": [[{ "node": "RESPOND | Recovery Result", "type": "main", "index": 0 }]] },
+    "HTTP | Save Reset Status": { "main": [[{ "node": "HTTP | Clear Lock On Reset", "type": "main", "index": 0 }]] },
+    "HTTP | Clear Lock On Reset": { "main": [[{ "node": "CODE | Format Reset Result", "type": "main", "index": 0 }]] },
+    "CODE | Format Reset Result": { "main": [[{ "node": "RESPOND | Recovery Result", "type": "main", "index": 0 }]] },
+    "HTTP | Read Destination Account": { "main": [[{ "node": "HTTP | Graph Verify Destination Account Identity", "type": "main", "index": 0 }]] },
+    "HTTP | Graph Verify Destination Account Identity": { "main": [[{ "node": "IF | Has Candidate Published ID", "type": "main", "index": 0 }]] },
+    "IF | Has Candidate Published ID": {
+      "main": [
+        [{ "node": "HTTP | Graph Verify Candidate Media", "type": "main", "index": 0 }],
+        [{ "node": "HTTP | Graph Check Container Status", "type": "main", "index": 0 }]
+      ]
+    },
+    "HTTP | Graph Verify Candidate Media": { "main": [[{ "node": "HTTP | Supabase Check Duplicate Published ID", "type": "main", "index": 0 }]] },
+    "HTTP | Supabase Check Duplicate Published ID": { "main": [[{ "node": "CODE | Validate Explicit Published Media", "type": "main", "index": 0 }]] },
+    "CODE | Validate Explicit Published Media": { "main": [[{ "node": "IF | Publication Verified Unambiguously", "type": "main", "index": 0 }]] },
+    "HTTP | Graph Check Container Status": { "main": [[{ "node": "HTTP | Graph Fetch Recent IG Media", "type": "main", "index": 0 }]] },
+    "HTTP | Graph Fetch Recent IG Media": { "main": [[{ "node": "HTTP | Supabase Read Existing Published IDs", "type": "main", "index": 0 }]] },
+    "HTTP | Supabase Read Existing Published IDs": { "main": [[{ "node": "CODE | Strict Container & Publication Match", "type": "main", "index": 0 }]] },
+    "CODE | Strict Container & Publication Match": { "main": [[{ "node": "IF | Publication Verified Unambiguously", "type": "main", "index": 0 }]] },
+    "IF | Publication Verified Unambiguously": {
+      "main": [
+        [{ "node": "HTTP | Save Verified PUBLISHED", "type": "main", "index": 0 }],
+        [{ "node": "CODE | Retain VERIFY_MANUALLY Result", "type": "main", "index": 0 }]
+      ]
+    },
+    "HTTP | Save Verified PUBLISHED": { "main": [[{ "node": "HTTP | Clear Lock On Verified Published", "type": "main", "index": 0 }]] },
+    "HTTP | Clear Lock On Verified Published": { "main": [[{ "node": "CODE | Format Verified Result", "type": "main", "index": 0 }]] },
+    "CODE | Format Verified Result": { "main": [[{ "node": "RESPOND | Recovery Result", "type": "main", "index": 0 }]] },
+    "CODE | Retain VERIFY_MANUALLY Result": { "main": [[{ "node": "RESPOND | Recovery Result", "type": "main", "index": 0 }]] }
   }
 }
